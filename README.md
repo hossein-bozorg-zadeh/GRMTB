@@ -71,8 +71,8 @@ This bot lets Telegram users track GitHub repositories and receive automatic upd
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/hossein-bozorg-zadeh/GitHub-Release-Monitor-Telegram-Bot.git
-   cd GitHub-Release-Monitor-Telegram-Bot
+   git clone https://github.com/hossein-bozorg-zadeh/GRMTB.git
+   cd GRMTB
    ```
 
 2. **Create a virtual environment (optional but recommended):**

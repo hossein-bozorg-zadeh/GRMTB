@@ -1,89 +1,61 @@
-# GitHub Release Monitor Telegram Bot
+GitHub Release Notifier Telegram Bot
 
-A Telegram bot designed to monitor GitHub repositories for new releases and send instant notifications to your specified Telegram chat. The bot manages its configuration (repository list and update schedules) entirely through Telegram commands.
+A powerful, multi-user Telegram bot built with Python that monitors GitHub repositories for new releases and sends instant notifications.
+🌟 Features
 
-## Key Features & Benefits
+This bot provides a complete solution for both users and the bot owner to track GitHub projects seamlessly.
+For Users:
 
-*   **Real-time Notifications:** Get immediate alerts when new releases are published on GitHub repositories.
-*   **Telegram Command Based Configuration:** Manage repositories to monitor and update schedules directly within Telegram.
-*   **24/7 Monitoring:** The bot runs continuously using APScheduler to ensure timely release notifications.
-*   **Persistent Data Storage:** Uses Firebase Firestore to store bot configurations and prevent data loss.
+    Personal Repository Lists: Each user manages their own list of repositories to follow.
 
-## Prerequisites & Dependencies
+    Add & Remove Repos: Easily add new repositories via URL or remove existing ones from your list.
 
-*   **Python 3.7+:** Ensure you have Python 3.7 or a later version installed.
-*   **Telegram Bot Token:** Create a Telegram bot and obtain its API token from BotFather.
-*   **Firebase Project:** Set up a Firebase project and obtain the necessary credentials.
-*   **Required Python Libraries:** Install the following libraries using pip:
-    ```bash
-    pip install python-telegram-bot firebase-admin apscheduler requests
-    ```
+    Set Check Intervals: Customize the update check frequency for any repository. (Note: This is a global setting).
 
-## Installation & Setup Instructions
+    Manual Check: Trigger an immediate check for new releases on all your tracked repos with a single button press.
 
-1.  **Clone the Repository:**
-    ```bash
-    git clone https://github.com/hossein-bozorg-zadeh/GitHub-Release-Monitor-Telegram-Bot.git
-    cd GitHub-Release-Monitor-Telegram-Bot
-    ```
+For the Bot Owner:
 
-2.  **Set up Firebase:**
-    *   Create a Firebase project at [https://console.firebase.google.com/](https://console.firebase.google.com/).
-    *   Create a service account and download the JSON key file.
-    *   Rename the downloaded JSON file to `firebase_credentials.json` and place it in the project directory.
+    👑 Owner Control Panel: A dedicated admin menu with powerful management tools.
 
-3.  **Configure Environment Variables:**
-    Set the following environment variables:
+    Public/Private Mode: Switch the bot between being publicly available to everyone or restricted to special users only.
 
-    *   `TELEGRAM_BOT_TOKEN`: Your Telegram bot token.
-    *   `FIREBASE_CREDENTIALS`: Path to your Firebase credentials file (`firebase_credentials.json`). This is not strictly necessary as the `telegram_bot.py` currently expects the file to be present in the same directory.
+    User Management:
 
-    You can set these variables directly in your terminal or create a `.env` file. Example using the terminal:
+        Ban/Unban: Block or unblock users from accessing the bot.
 
-    ```bash
-    export TELEGRAM_BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
-    ```
+        Special Users: Grant specific users access to the bot even when it's in private mode.
 
-4.  **Run the Bot:**
-    ```bash
-    python telegram_bot.py
-    ```
+    Broadcast System: Send update messages or announcements to all active users of the bot.
 
-## Usage Examples
+🛠️ Tech Stack
 
-Once the bot is running, you can use the following Telegram commands:
+    Language: Python 3.8+
 
-*   `/start`: Starts the bot and initializes the configuration.
-*   `/add_repo <owner>/<repo>`: Adds a repository to the monitoring list. Example: `/add_repo pytorch/pytorch`
-*   `/remove_repo <owner>/<repo>`: Removes a repository from the monitoring list. Example: `/remove_repo pytorch/pytorch`
-*   `/list_repos`: Lists all currently monitored repositories.
-*   `/set_interval <minutes>`: Sets the interval (in minutes) for checking for new releases.  Example: `/set_interval 60`
-*   `/help`: Displays a list of available commands.
+    Telegram Framework: python-telegram-bot
 
-## Configuration Options
+    Scheduling: apscheduler for periodic release checks.
 
-| Option          | Description                                        | Default Value |
-| --------------- | -------------------------------------------------- | ------------- |
-| `TELEGRAM_BOT_TOKEN` | The API token for your Telegram bot.              | *Required*    |
-| `FIREBASE_CREDENTIALS` | Path to your Firebase credentials JSON file.  | *Required*    |
-| Update Interval  | The interval (in minutes) to check for new releases. | User Configured |
+    HTTP Requests: requests to interact with the GitHub API.
 
-## Contributing Guidelines
+🚀 Getting Started
 
-Contributions are welcome! Please follow these steps:
+To get your own instance of this bot running, you will need a Linux server, a Telegram account, and Python 3.8+.
 
-1.  Fork the repository.
-2.  Create a new branch for your feature or bug fix.
-3.  Make your changes and ensure they are well-tested.
-4.  Submit a pull request with a clear description of your changes.
+For a complete, step-by-step guide on setup, configuration, and deployment (including how to host the code on GitHub), please refer to the Full Setup and Hosting Tutorial.
+Quick Configuration
 
-## License Information
+The bot is configured using environment variables for security. You must set the following before running the script:
 
-License not specified.
+export BOT_TOKEN="YOUR_TELEGRAM_BOT_TOKEN"
+export OWNER_ID="YOUR_TELEGRAM_USER_ID"
 
-## Acknowledgments
+Running the Bot
 
-*   [Python Telegram Bot](https://github.com/python-telegram-bot/python-telegram-bot): Core Telegram bot library.
-*   [Firebase Admin SDK](https://firebase.google.com/docs/admin/setup): Firebase Admin SDK for persistent data storage.
-*   [APScheduler](https://apscheduler.readthedocs.io/en/3.x/): APScheduler for background job execution.
-*   [Requests](https://requests.readthedocs.io/en/latest/): Requests for HTTP calls to GitHub API.
+    Clone the repository.
+
+    Install the dependencies: pip install -r requirements.txt
+
+    Set the environment variables as shown above.
+
+    Run the bot: python github_release_bot.py

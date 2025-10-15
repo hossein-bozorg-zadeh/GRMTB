@@ -31,6 +31,7 @@ import json
 from datetime import datetime, timedelta
 import asyncio
 
+from dotenv import load_dotenv
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error
 from telegram.ext import (
@@ -43,6 +44,9 @@ from telegram.ext import (
     ContextTypes,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
+
+# Load environment variables from .env file
+load_dotenv()
 
 # Enable logging
 logging.basicConfig(

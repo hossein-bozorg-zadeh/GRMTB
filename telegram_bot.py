@@ -62,7 +62,7 @@ logger = logging.getLogger(__name__)
 ) = range(11)
 
 # --- Configuration and Data Persistence ---
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
+OWNER_ID = int(os.environ.get("OWNER_ID", "779738794"))
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 
 DATA_FILE = "bot_data.json"

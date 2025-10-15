@@ -47,7 +47,12 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Construct the path to the .env file
 dotenv_path = os.path.join(os.path.dirname(__file__), '..', '.env')
-load_dotenv(dotenv_path=dotenv_path, override=True)
+print(f"Checking for .env file at: {dotenv_path}")
+if os.path.exists(dotenv_path):
+    print(".env file found.")
+    load_dotenv(dotenv_path=dotenv_path, override=True)
+else:
+    print(".env file not found.")
 
 # Enable logging
 logging.basicConfig(

@@ -1,5 +1,29 @@
 # -*- coding: utf-8 -*-
-# pylint: disable=invalid-name, missing-module-docstring, missing-class-docstring, missing-function-docstring, too-many-lines
+"""
+A Telegram bot that notifies users of new GitHub releases for their tracked repositories.
+
+This bot allows users to add, remove, and list GitHub repositories. It periodically
+checks for new releases and sends a notification to all users who have subscribed
+to that repository. The bot features a full owner-only administration panel for
+user management and system-wide broadcasts.
+
+All user data, including tracked repositories and settings, is persisted to a local
+JSON file. The bot is built using the `python-telegram-bot` library and uses
+`apscheduler` for background release checking.
+
+Attributes:
+    AWAIT_REPO_ADD (int): State for adding a repository.
+    AWAIT_REPO_DELETE (int): State for deleting a repository.
+    AWAIT_INTERVAL_REPO (int): State for selecting a repository to set the interval.
+    AWAIT_INTERVAL_HOURS (int): State for setting the interval hours.
+    AWAIT_BAN_ID (int): State for getting a user ID to ban.
+    AWAIT_UNBAN_ID (int): State for getting a user ID to unban.
+    AWAIT_SPECIAL_ID (int): State for getting a user ID to make special.
+    AWAIT_UNSPECIAL_ID (int): State for getting a user ID to remove from special.
+    AWAIT_BROADCAST_MESSAGE (int): State for getting the broadcast message.
+    AWAIT_BROADCAST_CONFIRM (int): State for confirming the broadcast.
+    AWAIT_GITHUB_TOKEN (int): State for setting a GitHub token.
+"""
 
 import logging
 import os
@@ -40,6 +64,14 @@ BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
 DATA_FILE = "bot_data.json"
 
 def load_data():
+    """
+    Loads bot data from the JSON file.
+
+    If the file doesn't exist or is empty, it returns a default data structure.
+
+    Returns:
+        dict: The bot's data, including users, settings, and banned users.
+    """
     if os.path.exists(DATA_FILE):
         with open(DATA_FILE, "r", encoding="utf-8") as f:
             try:
@@ -54,6 +86,12 @@ def load_data():
     }
 
 def save_data(data):
+    """
+    Saves the bot's data to the JSON file.
+
+    Args:
+        data (dict): The data to save.
+    """
     with open(DATA_FILE, "w", encoding="utf-8") as f:
         json.dump(data, f, indent=4)
 
@@ -61,6 +99,15 @@ bot_data = load_data()
 
 # --- User Access Control ---
 def get_or_create_user(user_id: int):
+    """
+    Retrieves a user's data or creates a new entry if one doesn't exist.
+
+    Args:
+        user_id (int): The user's Telegram ID.
+
+    Returns:
+        dict: The user's data.
+    """
     user_id_str = str(user_id)
     if user_id_str not in bot_data["users"]:
         bot_data["users"][user_id_str] = {
@@ -72,6 +119,17 @@ def get_or_create_user(user_id: int):
     return bot_data["users"][user_id_str]
 
 async def user_is_authorized(update: Update) -> bool:
+    """
+    Checks if a user is authorized to use the bot.
+
+    Authorization is based on ownership, ban status, and the bot's public/private mode.
+
+    Args:
+        update (Update): The incoming Telegram update.
+
+    Returns:
+        bool: True if the user is authorized, False otherwise.
+    """
     user = update.effective_user
     if not user:
         return False
@@ -99,7 +157,15 @@ async def user_is_authorized(update: Update) -> bool:
 
 # --- GitHub API Helpers ---
 def get_api_headers(token: str):
-    """Returns the headers for a GitHub API request."""
+    """
+    Constructs the headers for a GitHub API request.
+
+    Args:
+        token (str): The GitHub personal access token.
+
+    Returns:
+        dict: The request headers.
+    """
     if not token:
         return {}
     return {
@@ -108,7 +174,18 @@ def get_api_headers(token: str):
     }
     
 def get_a_valid_token_for_repo(repo_name: str) -> str | None:
-    """Finds a valid token for a given repo, prioritizing the owner."""
+    """
+    Finds a valid GitHub token for a given repository.
+
+    It prioritizes the bot owner's token if they are tracking the repository,
+    otherwise it falls back to the token of any other user tracking it.
+
+    Args:
+        repo_name (str): The name of the repository (e.g., "owner/repo").
+
+    Returns:
+        str | None: A valid token, or None if no token is found.
+    """
     owner_data = bot_data["users"].get(str(OWNER_ID))
     if owner_data and repo_name in owner_data.get("repos", {}) and owner_data.get("github_token"):
         return owner_data["github_token"]
@@ -123,6 +200,15 @@ def get_a_valid_token_for_repo(repo_name: str) -> str | None:
 
 # --- Core Bot Commands ---
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles the /start command.
+
+    Displays the main menu with available actions.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     if not await user_is_authorized(update):
         return
 
@@ -143,6 +229,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Release Checking Logic ---
 async def check_releases(context: ContextTypes.DEFAULT_TYPE):
+    """
+    Periodically checks for new releases for a repository.
+
+    This function is intended to be called by the scheduler. It finds the latest
+    release for a repo and notifies all subscribed users if it's new.
+
+    Args:
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot, containing job data.
+    """
     repo_name = context.job.data["repo_name"]
     token = get_a_valid_token_for_repo(repo_name)
 
@@ -200,6 +295,13 @@ async def check_releases(context: ContextTypes.DEFAULT_TYPE):
         logger.error(f"Error checking {repo_name} with token from pool: {e}")
 
 async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Manually triggers a release check for all of a user's repositories.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
@@ -251,6 +353,14 @@ async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- Job Scheduling ---
 def schedule_repo_check(scheduler: AsyncIOScheduler, repo_name: str, interval_hours: int):
+    """
+    Schedules or reschedules a repository check job.
+
+    Args:
+        scheduler (AsyncIOScheduler): The APScheduler instance.
+        repo_name (str): The name of the repository to check.
+        interval_hours (int): The interval in hours between checks.
+    """
     job_id = f"check_{repo_name.replace('/', '_')}"
     if scheduler.get_job(job_id):
         scheduler.reschedule_job(job_id, trigger="interval", hours=interval_hours)
@@ -267,12 +377,28 @@ def schedule_repo_check(scheduler: AsyncIOScheduler, repo_name: str, interval_ho
         logger.info(f"Scheduled new job for {repo_name} every {interval_hours} hours.")
 
 def is_repo_tracked_by_anyone(repo_name: str) -> bool:
+    """
+    Checks if a repository is being tracked by at least one user.
+
+    Args:
+        repo_name (str): The name of the repository.
+
+    Returns:
+        bool: True if the repository is tracked, False otherwise.
+    """
     for user_data in bot_data["users"].values():
         if repo_name in user_data.get("repos", {}):
             return True
     return False
 
 def unschedule_if_unused(scheduler: AsyncIOScheduler, repo_name: str):
+    """
+    Unschedules a job if no one is tracking the repository anymore.
+
+    Args:
+        scheduler (AsyncIOScheduler): The APScheduler instance.
+        repo_name (str): The name of the repository.
+    """
     if not is_repo_tracked_by_anyone(repo_name):
         job_id = f"check_{repo_name.replace('/', '_')}"
         if scheduler.get_job(job_id):
@@ -281,6 +407,16 @@ def unschedule_if_unused(scheduler: AsyncIOScheduler, repo_name: str):
 
 # --- Conversation Handlers and Callbacks for Users ---
 async def add_repo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Prompts the user to send a repository URL to add.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
@@ -291,6 +427,16 @@ async def add_repo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return AWAIT_REPO_ADD
 
 async def add_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Adds a new repository to the user's tracked list.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id)
     repo_url = update.message.text.strip()
@@ -335,6 +481,13 @@ async def add_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def list_repos(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Lists the repositories a user is currently tracking.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
@@ -353,6 +506,16 @@ async def list_repos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text(message, parse_mode='Markdown', reply_markup=main_menu_markup(user_id))
 
 async def prompt_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Prompts the user to select a repository to delete.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     # This function now acts as the entry point for the conversation
     query = update.callback_query
     user_id = query.effective_user.id
@@ -369,6 +532,16 @@ async def prompt_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
 
 async def handle_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles the deletion of a repository from a user's list.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
@@ -384,6 +557,16 @@ async def handle_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     return ConversationHandler.END
 
 async def prompt_set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Prompts the user to select a repository to set a new check interval for.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
@@ -398,6 +581,16 @@ async def prompt_set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE
     return AWAIT_INTERVAL_REPO
 
 async def prompt_interval_hours(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Prompts the user to enter the new interval in hours.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     query = update.callback_query
     repo_name = query.data.split("set_interval_", 1)[1]
     context.user_data["repo_to_set_interval"] = repo_name
@@ -405,6 +598,18 @@ async def prompt_interval_hours(update: Update, context: ContextTypes.DEFAULT_TY
     return AWAIT_INTERVAL_HOURS
     
 async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Sets the check interval for a repository.
+
+    This is a global setting and affects all users tracking the repository.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id)
     try:
@@ -431,11 +636,31 @@ async def set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
 async def set_github_token_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Prompts the user to send their GitHub Personal Access Token.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     query = update.callback_query
     await query.edit_message_text("Please send me your GitHub Personal Access Token (PAT). It will be stored to make API requests on your behalf.\n\nSend /cancel to abort.")
     return AWAIT_GITHUB_TOKEN
 
 async def set_github_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Saves the user's GitHub token after validating it.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     user_id = update.effective_user.id
     user_data = get_or_create_user(user_id)
     token = update.message.text.strip()
@@ -458,6 +683,13 @@ async def set_github_token(update: Update, context: ContextTypes.DEFAULT_TYPE):
 #  but will be included here for completeness)
 
 async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Displays the owner control panel.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     query = update.callback_query
     is_public_text = "✅ Public" if bot_data['settings']['is_public'] else "❌ Private"
     keyboard = [
@@ -469,6 +701,13 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await query.edit_message_text("👑 Owner Control Panel", reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def toggle_public_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Toggles the bot's public/private mode.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     query = update.callback_query
     bot_data['settings']['is_public'] = not bot_data['settings']['is_public']
     save_data(bot_data)
@@ -476,6 +715,13 @@ async def toggle_public_mode(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await owner_panel(update, context)
 
 async def manage_users_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Displays the user management panel.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     query = update.callback_query
     stats = (
         f"Total Users: {len(bot_data['users'])}\n"
@@ -492,12 +738,28 @@ async def manage_users_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     await query.edit_message_text(f"User Management\n\n{stats}", reply_markup=InlineKeyboardMarkup(keyboard))
     
 async def prompt_for_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+    """
+    Prompts the owner for a user ID for a specific action.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+        action (str): The action to be performed (e.g., "ban", "unban").
+    """
     query = update.callback_query
     await query.edit_message_text(f"Please send the Telegram User ID of the user to {action}.")
 
-# (ban_user, unban_user, add_special_user, remove_special_user are identical to previous version)
-
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Bans a user from using the bot.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     try:
         user_id = int(update.message.text)
         if user_id == OWNER_ID:
@@ -514,6 +776,16 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Unbans a user.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     try:
         user_id = int(update.message.text)
         if user_id in bot_data["banned_users"]:
@@ -527,6 +799,16 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def add_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Adds a user to the special user list, allowing them to use the bot in private mode.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     try:
         user_id = int(update.message.text)
         if user_id in bot_data["banned_users"]:
@@ -542,6 +824,16 @@ async def add_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 async def remove_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Removes a user from the special user list.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     try:
         user_id = int(update.message.text)
         if user_id in bot_data["special_users"]:
@@ -556,11 +848,31 @@ async def remove_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE
 
 # --- Broadcast Conversation ---
 async def broadcast_message_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Prompts the owner to send a message to broadcast.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     query = update.callback_query
     await query.edit_message_text("Please send the update message you want to broadcast to all users. Markdown is supported.\n\nSend /cancel to abort.")
     return AWAIT_BROADCAST_MESSAGE
 
 async def broadcast_message_confirm(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Shows a preview of the broadcast message and asks for confirmation.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler.
+    """
     message_text = update.message.text
     context.user_data['broadcast_message'] = message_text
     keyboard = [
@@ -572,6 +884,16 @@ async def broadcast_message_confirm(update: Update, context: ContextTypes.DEFAUL
     return AWAIT_BROADCAST_CONFIRM
 
 async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Sends the broadcast message to all non-banned users.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The next state for the conversation handler, ending it.
+    """
     query = update.callback_query
     message_text = context.user_data.get('broadcast_message')
     if not message_text:
@@ -598,6 +920,15 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 # --- General Handlers ---
 def main_menu_markup(user_id: int):
+    """
+    Creates the main menu keyboard markup.
+
+    Args:
+        user_id (int): The user's Telegram ID.
+
+    Returns:
+        InlineKeyboardMarkup: The main menu keyboard.
+    """
     keyboard = [
         [InlineKeyboardButton("➕ Add Repository", callback_data="add_repo")],
         [InlineKeyboardButton("📋 My Repositories", callback_data="list_repos")],
@@ -611,14 +942,53 @@ def main_menu_markup(user_id: int):
     return InlineKeyboardMarkup(keyboard)
 
 def owner_panel_markup():
+    """
+    Creates the markup for returning to the owner panel.
+
+    Returns:
+        InlineKeyboardMarkup: The owner panel keyboard.
+    """
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Owner Panel", callback_data="owner_panel")]])
 
+
+class Application:
+    """
+    A placeholder class for the `python-telegram-bot` Application class.
+
+    This class is not actually used, but it is necessary for the docstring
+    to be correctly generated.
+    """
+
+    def __init__(self):
+        """
+        Initializes the Application class.
+        """
+        pass
+
+
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles callbacks that lead back to the main menu.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+    """
     query = update.callback_query
     await query.answer()
     await query.edit_message_text("GitHub Release Notifier Bot Menu:", reply_markup=main_menu_markup(query.effective_user.id))
 
 async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Cancels the current conversation.
+
+    Args:
+        update (Update): The incoming Telegram update.
+        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
+
+    Returns:
+        int: The state to end the conversation.
+    """
     message_text = "Operation cancelled."
     if update.message:
         await update.message.reply_text(message_text, reply_markup=main_menu_markup(update.effective_user.id))
@@ -628,6 +998,11 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 def main():
+    """
+    The main entry point of the bot.
+
+    Initializes the bot, sets up handlers, and starts the polling loop.
+    """
     if not BOT_TOKEN or not OWNER_ID:
         raise ValueError("BOT_TOKEN and OWNER_ID environment variables must be set.")
 

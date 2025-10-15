@@ -8,61 +8,60 @@ A Python-powered Telegram bot that automatically monitors GitHub repositories fo
 
 - [Overview](#overview)
 - [Features](#features)
-- [Commands](#commands)
-- [Admin Commands](#admin-commands)
+- [Usage](#usage)
+- [Owner Panel](#owner-panel)
 - [Installation](#installation)
 - [Configuration](#configuration)
-- [How It Works](#how-it-works)
+- [Data Persistence](#data-persistence)
 - [File Structure](#file-structure)
-- [Detailed Walkthrough](#detailed-walkthrough)
-- [Future Improvements](#future-improvements)
 - [License](#license)
 
 ---
 
 ## 🧩 Overview
 
-This bot lets Telegram users track GitHub repositories and receive automatic updates whenever a new release is published. It can handle multiple repositories per user and runs periodic background checks to detect changes using the official GitHub API.
+This bot lets Telegram users track GitHub repositories and receive automatic updates whenever a new release is published. It can handle multiple repositories per user and runs periodic background checks to detect changes using the official GitHub API. The bot uses a modern inline keyboard interface for all interactions.
 
 ---
 
 ## ✨ Features
 
-- Subscribe/unsubscribe to any public GitHub repository.
-- Receive Telegram notifications for new releases.
-- List and manage your tracked repositories.
-- Persistent data storage using JSON (`bot_data.json`).
-- Background monitoring via `APScheduler`.
-- Admin panel for bot control (ban, unban, broadcast, etc.).
-- Lightweight, asynchronous, and reliable.
+- **Add & Remove Repositories**: Easily add and remove repositories from your watch list.
+- **Interactive Menu**: All actions are handled through an intuitive inline keyboard menu.
+- **Custom Check Intervals**: Set a custom check interval for each repository.
+- **Manual & Scheduled Checks**: Trigger a manual check for all your repositories at any time, or rely on the background scheduler.
+- **GitHub Token Support**: Add your GitHub personal access token to get higher API rate limits and access private repositories.
+- **Owner-Only Admin Panel**: A secure owner panel to manage users and the bot's settings.
+- **User Management**: Ban, unban, and manage special users who can use the bot in private mode.
+- **Broadcast System**: Send a message to all users of the bot.
+- **Public/Private Mode**: Control who can use the bot.
 
 ---
 
-## 💬 Commands
+## 💬 Usage
 
-| Command | Description |
+Start a conversation with the bot and use the inline keyboard to navigate through the options.
+
+| Button | Description |
 |----------|-------------|
-| `/start` | Start the bot and display a welcome message. |
-| `/help` | Show available commands and usage guide. |
-| `/add <owner/repo>` | Add a GitHub repository to your watch list. |
-| `/remove <owner/repo>` | Stop tracking a specific repository. |
-| `/list` | Show all repositories you’re currently watching. |
-| `/check` | Force an immediate check for new releases. |
-| `/about` | Learn about the bot and its developer. |
+| ➕ Add Repository | Add a new GitHub repository to your watch list. |
+| 📋 My Repositories | View a list of all the repositories you are currently tracking. |
+| ➖ Delete Repository | Remove a repository from your watch list. |
+| ⏰ Set Check Interval | Set a custom check interval for a repository. |
+| 🔍 Check All My Repos Now | Manually trigger a release check for all your repositories. |
+| 🔑 Set GitHub Token | Add or update your GitHub personal access token. |
 
 ---
 
-## 👑 Admin Commands
+## 👑 Owner Panel
 
-> Admin-only features are protected and available only to users listed as admins in the configuration.
+The owner panel is only accessible to the `OWNER_ID` configured in the environment variables.
 
-| Command | Description |
+| Button | Description |
 |----------|-------------|
-| `/broadcast <message>` | Send a message to all users. |
-| `/ban <user_id>` | Restrict a user from using the bot. |
-| `/unban <user_id>` | Remove ban for a specific user. |
-| `/stats` | Display total users, repositories, and system uptime. |
-| `/mode` | Toggle maintenance or debug mode. |
+| Mode: Public/Private | Toggle the bot's public/private mode. |
+| 📢 Broadcast Message | Send a message to all users. |
+| 👥 Manage Users | Ban, unban, and manage special users. |
 
 ---
 
@@ -71,8 +70,8 @@ This bot lets Telegram users track GitHub repositories and receive automatic upd
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/hossein-bozorg-zadeh/GRMTB.git
-   cd GRMTB
+   git clone https://github.com/your-username/your-repo-name.git
+   cd your-repo-name
    ```
 
 2. **Create a virtual environment (optional but recommended):**
@@ -89,23 +88,13 @@ This bot lets Telegram users track GitHub repositories and receive automatic upd
    pip install -r requirements.txt
    ```
 
-   **Contents of `requirements.txt`:**
-   ```
-   python-telegram-bot==20.8
-   APScheduler==3.10.4
-   requests==2.31.0
-   python-dotenv==1.0.1
-   aiohttp==3.9.5
-   ```
-
 4. **Set up environment variables:**
 
-   Create a `.env` file or export these variables:
+   Create a `.env` file in the root directory or export these variables:
 
    ```bash
-   TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
-   GITHUB_API_TOKEN=your_github_token_here
-   ADMIN_IDS=123456789,987654321  # comma-separated list of Telegram admin IDs
+   BOT_TOKEN="your_telegram_bot_token_here"
+   OWNER_ID="your_telegram_user_id_here"
    ```
 
 5. **Run the bot:**
@@ -116,32 +105,53 @@ This bot lets Telegram users track GitHub repositories and receive automatic upd
 
 ---
 
-## 🧠 How It Works
+## 🔧 Configuration
 
-1. **User Interaction:**  
-   Users interact with the bot through Telegram commands.
+The bot is configured through environment variables.
 
-2. **Data Storage:**  
-   The bot keeps track of user subscriptions and repository states in `bot_data.json`.
+| Variable | Description |
+|----------|-------------|
+| `BOT_TOKEN` | Your Telegram bot token, obtained from @BotFather. |
+| `OWNER_ID` | Your Telegram user ID. This is required for the owner panel. |
 
-3. **Release Checking:**  
-   Every few minutes, the bot checks GitHub repositories using the GitHub API and compares the latest release tag with the last stored one.
+---
 
-4. **Notifications:**  
-   If a new release is detected, the bot automatically sends a formatted message to all subscribed users.
+## 💾 Data Persistence
 
-5. **Scheduler:**  
-   APScheduler runs in the background to handle recurring release checks without blocking Telegram updates.
+The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file. This file is created automatically when the bot is first run.
+
+The data structure is as follows:
+
+```json
+{
+    "settings": {
+        "is_public": false
+    },
+    "users": {
+        "123456789": {
+            "repos": {
+                "owner/repo": {
+                    "url": "https://github.com/owner/repo",
+                    "interval_hours": 24,
+                    "last_release_id": 12345678
+                }
+            },
+            "github_token": "your_github_token"
+        }
+    },
+    "special_users": [],
+    "banned_users": []
+}
+```
 
 ---
 
 ## 🗂️ File Structure
 
 ```
-GitHub-Release-Monitor-Telegram-Bot/
-│
+.
 ├── telegram_bot.py        # Main bot source code
-├── bot_data.json          # Persistent user and repository data
+├── bot_data.json          # Persistent user and repository data (created on first run)
 ├── requirements.txt       # Dependencies
 ├── .env                   # Environment variables (not committed)
 └── README.md              # This file
@@ -149,65 +159,6 @@ GitHub-Release-Monitor-Telegram-Bot/
 
 ---
 
-## 🧩 Detailed Walkthrough
-
-### 1. Telegram Command Handlers
-
-All user commands are defined as async functions and registered via `CommandHandler`. The bot responds dynamically to user input and maintains a conversational interface.
-
-### 2. GitHub API Polling
-
-The bot uses asynchronous requests to GitHub’s REST API (`https://api.github.com/repos/<owner>/<repo>/releases/latest`).
-
-Each repository entry is stored with its last known release tag, so duplicate notifications are prevented.
-
-### 3. APScheduler Background Jobs
-
-A background scheduler periodically invokes a `check_releases()` function that polls all tracked repositories and updates users accordingly.
-
-### 4. Admin Panel
-
-Admin users can manage others, broadcast messages, and toggle bot modes — all protected via Telegram user ID authentication.
-
-### 5. Persistent Storage
-
-`bot_data.json` stores all subscriptions and metadata in this structure:
-
-```json
-{
-  "users": {
-    "123456": {
-      "repos": ["owner1/repo1", "owner2/repo2"]
-    }
-  },
-  "banned_users": [],
-  "settings": { "maintenance": false }
-}
-```
-
----
-
-## 🚀 Future Improvements
-
-- Add inline buttons for easier repo management.
-- Integrate with GitHub webhooks for real-time updates.
-- Add analytics dashboard for admins.
-- Support for private repositories.
-- Add localization and multi-language support.
-
----
-
 ## 📜 License
 
 This project is licensed under the MIT License. You are free to modify, distribute, and use it for both personal and commercial purposes.
-
----
-
-### 🧑‍💻 Author
-**Hossein Bozorg Zadeh**  
-GitHub: [hossein-bozorg-zadeh](https://github.com/hossein-bozorg-zadeh)
-
----
-
-**⭐ If you find this bot useful, please give it a star on GitHub!**
-

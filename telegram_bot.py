@@ -46,7 +46,7 @@ from telegram.ext import (
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
 # Load environment variables from .env file
-load_dotenv()
+load_dotenv(override=True)
 
 # Enable logging
 logging.basicConfig(

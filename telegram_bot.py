@@ -58,8 +58,8 @@ logger = logging.getLogger(__name__)
 ) = range(11)
 
 # --- Configuration and Data Persistence ---
-OWNER_ID = 779738794
-BOT_TOKEN = "8434781678:AAE22t7xsTmevmf62MOoSyct_KlgtneRXak"
+OWNER_ID = "your_telegram_user_id_here"
+BOT_TOKEN = "your_telegram_bot_token_here"
 
 DATA_FILE = "bot_data.json"
 

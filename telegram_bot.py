@@ -31,7 +31,6 @@ import json
 from datetime import datetime, timedelta
 import asyncio
 
-from dotenv import load_dotenv
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error
 from telegram.ext import (
@@ -44,10 +43,6 @@ from telegram.ext import (
     ContextTypes,
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-# Construct the path to the .env file
-dotenv_path = os.path.join(os.path.dirname(__file__), '.env')
-load_dotenv(dotenv_path=dotenv_path, override=True)
 
 # Enable logging
 logging.basicConfig(
@@ -63,8 +58,8 @@ logger = logging.getLogger(__name__)
 ) = range(11)
 
 # --- Configuration and Data Persistence ---
-OWNER_ID = int(os.environ.get("OWNER_ID", "0"))
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+OWNER_ID = 779738794
+BOT_TOKEN = "8434781678:AAE22t7xsTmevmf62MOoSyct_KlgtneRXak"
 
 DATA_FILE = "bot_data.json"
 
@@ -954,21 +949,6 @@ def owner_panel_markup():
         InlineKeyboardMarkup: The owner panel keyboard.
     """
     return InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Back to Owner Panel", callback_data="owner_panel")]])
-
-
-class Application:
-    """
-    A placeholder class for the `python-telegram-bot` Application class.
-
-    This class is not actually used, but it is necessary for the docstring
-    to be correctly generated.
-    """
-
-    def __init__(self):
-        """
-        Initializes the Application class.
-        """
-        pass
 
 
 async def main_menu_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):

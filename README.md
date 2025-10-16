@@ -70,8 +70,8 @@ The owner panel is only accessible to the `OWNER_ID` configured in the `telegram
 1. **Clone the repository:**
 
    ```bash
-   git clone https://github.com/your-username/your-repo-name.git
-   cd your-repo-name
+   git clone https://github.com/hossein-bozorg-zadeh/GRMTB.git
+   cd GRMTB
    ```
 
 2. **Create a virtual environment (optional but recommended):**

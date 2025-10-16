@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 OWNER_ID = "your_telegram_user_id_here"
 BOT_TOKEN = "your_telegram_bot_token_here"
 
-DATA_FILE = "bot_data.json"
+DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data.json")
 
 def load_data():
     """

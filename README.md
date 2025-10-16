@@ -88,7 +88,11 @@ The owner panel is only accessible to the `OWNER_ID` configured in the `telegram
    pip install -r requirements.txt
    ```
 
-4. **Run the bot:**
+4. **Configure the bot:**
+
+    Open `telegram_bot.py` and set your `BOT_TOKEN` and `OWNER_ID` at the top of the file.
+
+5. **Run the bot:**
 
    ```bash
    python telegram_bot.py
@@ -104,7 +108,7 @@ The bot is configured by setting the `BOT_TOKEN` and `OWNER_ID` variables direct
 
 ## 💾 Data Persistence
 
-The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file. This file is created automatically when the bot is first run.
+The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file. **This file is created automatically** in the same directory as the script when the bot is first run.
 
 The data structure is as follows:
 

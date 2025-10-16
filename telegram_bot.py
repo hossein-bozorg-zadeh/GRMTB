@@ -61,7 +61,7 @@ logger = logging.getLogger(__name__)
 OWNER_ID = 779738794
 BOT_TOKEN = "8434781678:AAE22t7xsTmevmf62MOoSyct_KlgtneRXak"
 
-DATA_FILE = "bot_data.json"
+DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data.json")
 
 def load_data():
     """

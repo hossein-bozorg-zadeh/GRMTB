@@ -55,7 +55,7 @@ Start a conversation with the bot and use the inline keyboard to navigate throug
 
 ## 👑 Owner Panel
 
-The owner panel is only accessible to the `OWNER_ID` configured in the environment variables.
+The owner panel is only accessible to the `OWNER_ID` configured in the `telegram_bot.py` file.
 
 | Button | Description |
 |----------|-------------|
@@ -88,16 +88,7 @@ The owner panel is only accessible to the `OWNER_ID` configured in the environme
    pip install -r requirements.txt
    ```
 
-4. **Set up environment variables:**
-
-   Create a `.env` file in the root directory or export these variables:
-
-   ```bash
-   BOT_TOKEN="your_telegram_bot_token_here"
-   OWNER_ID="your_telegram_user_id_here"
-   ```
-
-5. **Run the bot:**
+4. **Run the bot:**
 
    ```bash
    python telegram_bot.py
@@ -107,12 +98,7 @@ The owner panel is only accessible to the `OWNER_ID` configured in the environme
 
 ## 🔧 Configuration
 
-The bot is configured through environment variables.
-
-| Variable | Description |
-|----------|-------------|
-| `BOT_TOKEN` | Your Telegram bot token, obtained from @BotFather. |
-| `OWNER_ID` | Your Telegram user ID. This is required for the owner panel. |
+The bot is configured by setting the `BOT_TOKEN` and `OWNER_ID` variables directly in the `telegram_bot.py` script.
 
 ---
 
@@ -153,7 +139,6 @@ The data structure is as follows:
 ├── telegram_bot.py        # Main bot source code
 ├── bot_data.json          # Persistent user and repository data (created on first run)
 ├── requirements.txt       # Dependencies
-├── .env                   # Environment variables (not committed)
 └── README.md              # This file
 ```
 

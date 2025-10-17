@@ -36,6 +36,8 @@ This bot lets Telegram users track GitHub repositories and receive automatic upd
 - **User Management**: Ban, unban, and manage special users who can use the bot in private mode.
 - **Broadcast System**: Send a message to all users of the bot.
 - **Public/Private Mode**: Control who can use the bot.
+- **Automatic Backups**: The bot automatically sends a backup of the data and log files to the owner every 24 hours.
+- **Data & Log Downloads**: Download the `bot_data.json` and `logs.json` files directly from the owner panel.
 
 ---
 
@@ -63,6 +65,8 @@ The owner panel is only accessible to the `OWNER_ID` configured in the `telegram
 | Mode: Public/Private | Toggle the bot's public/private mode. |
 | 📢 Broadcast Message | Send a message to all users. |
 | 👥 Manage Users | Ban, unban, and manage special users. |
+| 💾 Download Data | Download a copy of the `bot_data.json` file. |
+| 📋 Download Logs | Download a copy of the `logs.json` file. |
 
 ---
 

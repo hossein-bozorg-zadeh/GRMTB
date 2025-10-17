@@ -59,8 +59,8 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 # States for conversation handlers
 (
     AWAIT_REPO_ADD, AWAIT_REPO_DELETE, AWAIT_INTERVAL_REPO, AWAIT_INTERVAL_HOURS,
-    AWAIT_BAN_ID, AWAIT_UNBAN_ID, AWAIT_SPECIAL_ID, AWAIT_UNSPECIAL_ID,
-    AWAIT_BROADCAST_MESSAGE, AWAIT_BROADCAST_CONFIRM, AWAIT_GITHUB_TOKEN
+    AWAIT_BROADCAST_MESSAGE, AWAIT_BROADCAST_CONFIRM, AWAIT_GITHUB_TOKEN,
+    AWAIT_BAN_ID, AWAIT_UNBAN_ID, AWAIT_SPECIAL_ID, AWAIT_UNSPECIAL_ID
 ) = range(11)
 
 # --- Configuration and Data Persistence ---
@@ -366,6 +366,7 @@ async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     query = update.callback_query
+    await query.answer()
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
 
@@ -484,6 +485,7 @@ async def add_repo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return ConversationHandler.END
 
     query = update.callback_query
+    await query.answer()
     user_id = query.effective_user.id
     logger.info(f"add_repo_prompt: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
@@ -559,6 +561,7 @@ async def list_repos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     query = update.callback_query
+    await query.answer()
     user_id = query.effective_user.id
     logger.info(f"list_repos: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
@@ -592,6 +595,7 @@ async def prompt_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
 
     # This function now acts as the entry point for the conversation
     query = update.callback_query
+    await query.answer()
     user_id = query.effective_user.id
     logger.info(f"prompt_delete_repo: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
@@ -618,6 +622,7 @@ async def handle_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
         int: The next state for the conversation handler, ending it.
     """
     query = update.callback_query
+    await query.answer()
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
     repo_name = query.data.split("del_repo_", 1)[1]
@@ -670,6 +675,7 @@ async def prompt_interval_hours(update: Update, context: ContextTypes.DEFAULT_TY
         int: The next state for the conversation handler.
     """
     query = update.callback_query
+    await query.answer()
     repo_name = query.data.split("set_interval_", 1)[1]
     context.user_data["repo_to_set_interval"] = repo_name
     await query.edit_message_text(f"Enter the new check interval in hours for `{repo_name}`.\n\nNote: This is a global setting for this repository.", parse_mode='Markdown')
@@ -725,6 +731,7 @@ async def set_github_token_prompt(update: Update, context: ContextTypes.DEFAULT_
         int: The next state for the conversation handler.
     """
     query = update.callback_query
+    await query.answer()
     await query.edit_message_text("Please send me your GitHub Personal Access Token (PAT). It will be stored to make API requests on your behalf.\n\nSend /cancel to abort.")
     return AWAIT_GITHUB_TOKEN
 
@@ -769,6 +776,7 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context (ContextTypes.DEFAULT_TYPE): The context of the bot.
     """
     query = update.callback_query
+    await query.answer()
     is_public_text = "✅ Public" if bot_data['settings']['is_public'] else "❌ Private"
     keyboard = [
         [InlineKeyboardButton(f"Mode: {is_public_text}", callback_data="toggle_public")],
@@ -850,6 +858,7 @@ async def manage_users_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
         context (ContextTypes.DEFAULT_TYPE): The context of the bot.
     """
     query = update.callback_query
+    await query.answer()
     stats = (
         f"Total Users: {len(bot_data['users'])}\n"
         f"Special Users: {len(bot_data['special_users'])}\n"
@@ -864,17 +873,28 @@ async def manage_users_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     await query.edit_message_text(f"User Management\n\n{stats}", reply_markup=InlineKeyboardMarkup(keyboard))
     
-async def prompt_for_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str):
+async def prompt_for_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> int:
     """
-    Prompts the owner for a user ID for a specific action.
+    Prompts the owner for a user ID for a specific action and returns the next state.
 
     Args:
         update (Update): The incoming Telegram update.
         context (ContextTypes.DEFAULT_TYPE): The context of the bot.
-        action (str): The action to be performed (e.g., "ban", "unban").
+        action (str): The action to be performed.
+
+    Returns:
+        int: The next state for the conversation handler.
     """
+    action_to_state = {
+        "ban": AWAIT_BAN_ID,
+        "unban": AWAIT_UNBAN_ID,
+        "add as special": AWAIT_SPECIAL_ID,
+        "remove from special": AWAIT_UNSPECIAL_ID,
+    }
     query = update.callback_query
+    await query.answer()
     await query.edit_message_text(f"Please send the Telegram User ID of the user to {action}.")
+    return action_to_state.get(action)
 
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -986,6 +1006,7 @@ async def broadcast_message_prompt(update: Update, context: ContextTypes.DEFAULT
         int: The next state for the conversation handler.
     """
     query = update.callback_query
+    await query.answer()
     await query.edit_message_text("Please send the update message you want to broadcast to all users. Markdown is supported.\n\nSend /cancel to abort.")
     return AWAIT_BROADCAST_MESSAGE
 
@@ -1022,6 +1043,7 @@ async def broadcast_send(update: Update, context: ContextTypes.DEFAULT_TYPE):
         int: The next state for the conversation handler, ending it.
     """
     query = update.callback_query
+    await query.answer()
     message_text = context.user_data.get('broadcast_message')
     if not message_text:
         await query.edit_message_text("Error: Message not found.", reply_markup=owner_panel_markup())
@@ -1188,22 +1210,22 @@ def main():
     )
     ban_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"ban"), pattern="^ban_user$")],
-        states={0: [MessageHandler(filters.TEXT & ~filters.COMMAND, ban_user)]},
+        states={AWAIT_BAN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, ban_user)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     unban_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"unban"), pattern="^unban_user$")],
-        states={0: [MessageHandler(filters.TEXT & ~filters.COMMAND, unban_user)]},
+        states={AWAIT_UNBAN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, unban_user)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     add_special_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"add as special"), pattern="^add_special$")],
-        states={0: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_special_user)]},
+        states={AWAIT_SPECIAL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_special_user)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
     remove_special_handler = ConversationHandler(
         entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"remove from special"), pattern="^remove_special$")],
-        states={0: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_special_user)]},
+        states={AWAIT_UNSPECIAL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_special_user)]},
         fallbacks=[CommandHandler("cancel", cancel)],
     )
 

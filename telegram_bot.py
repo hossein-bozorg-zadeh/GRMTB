@@ -92,8 +92,20 @@ def save_data(data):
     Args:
         data (dict): The data to save.
     """
-    with open(DATA_FILE, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4)
+    try:
+        with open(DATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(data, f, indent=4)
+    except IOError as e:
+        logger.error(f"Could not save data to {DATA_FILE}: {e}")
+
+# Initialize data file on startup if it doesn't exist
+if not os.path.exists(DATA_FILE):
+    save_data({
+        "settings": {"is_public": False},
+        "users": {},
+        "special_users": [],
+        "banned_users": []
+    })
 
 bot_data = load_data()
 

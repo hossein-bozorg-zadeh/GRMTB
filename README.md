@@ -108,7 +108,9 @@ The bot is configured by setting the `BOT_TOKEN` and `OWNER_ID` variables direct
 
 ## 💾 Data Persistence
 
-The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file. **This file is created automatically** in the same directory as the script when the bot is first run.
+The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file.
+
+**This file is created automatically** in the same directory as the script when the bot is first run. The script requires write permissions in its directory to create and update this file.
 
 The data structure is as follows:
 

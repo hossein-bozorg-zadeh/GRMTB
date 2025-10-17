@@ -44,11 +44,6 @@ from telegram.ext import (
 )
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 
-# Enable logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
-)
-logger = logging.getLogger(__name__)
 
 # States for conversation handlers
 (
@@ -62,6 +57,41 @@ OWNER_ID = 779738794
 BOT_TOKEN = "8434781678:AAE22t7xsTmevmf62MOoSyct_KlgtneRXak"
 
 DATA_FILE = os.path.join(os.path.dirname(__file__), "bot_data.json")
+LOG_FILE = os.path.join(os.path.dirname(__file__), "logs.json")
+
+def log_activity(message: str, level: str = "INFO"):
+    """
+    Logs a message to the console and to the logs.json file.
+
+    Args:
+        message (str): The message to log.
+        level (str, optional): The logging level. Defaults to "INFO".
+    """
+    # Log to console
+    if level.upper() == "INFO":
+        logger.info(message)
+    elif level.upper() == "WARNING":
+        logger.warning(message)
+    elif level.upper() == "ERROR":
+        logger.error(message)
+    else:
+        logger.info(message)
+
+    # Log to file
+    if not os.path.exists(LOG_FILE):
+        with open(LOG_FILE, "w", encoding="utf-8") as f:
+            json.dump([], f)
+
+    with open(LOG_FILE, "r+", encoding="utf-8") as f:
+        logs = json.load(f)
+        logs.append({
+            "timestamp": datetime.now().isoformat(),
+            "level": level.upper(),
+            "message": message
+        })
+        f.seek(0)
+        json.dump(logs, f, indent=4)
+
 
 def load_data():
     """
@@ -96,7 +126,7 @@ def save_data(data):
         with open(DATA_FILE, "w", encoding="utf-8") as f:
             json.dump(data, f, indent=4)
     except IOError as e:
-        logger.error(f"Could not save data to {DATA_FILE}: {e}")
+        log_activity(f"Could not save data to {DATA_FILE}: {e}", "ERROR")
 
 # Initialize data file on startup if it doesn't exist
 if not os.path.exists(DATA_FILE):
@@ -127,7 +157,7 @@ def get_or_create_user(user_id: int):
             "github_token": None
         }
         save_data(bot_data)
-        logger.info(f"New user created: {user_id_str}")
+        log_activity(f"New user created: {user_id_str}")
     return bot_data["users"][user_id_str]
 
 async def user_is_authorized(update: Update) -> bool:
@@ -254,7 +284,7 @@ async def check_releases(context: ContextTypes.DEFAULT_TYPE):
     token = get_a_valid_token_for_repo(repo_name)
 
     if not token:
-        logger.warning(f"No valid GitHub token found for checking {repo_name}. Skipping.")
+        log_activity(f"No valid GitHub token found for checking {repo_name}. Skipping.", "WARNING")
         return
 
     global_repo_info = None
@@ -264,7 +294,7 @@ async def check_releases(context: ContextTypes.DEFAULT_TYPE):
             break
 
     if not global_repo_info:
-        logger.warning(f"Job for {repo_name} ran, but no user tracks it. Removing job.")
+        log_activity(f"Job for {repo_name} ran, but no user tracks it. Removing job.", "WARNING")
         context.job.schedule_removal()
         return
 
@@ -272,7 +302,7 @@ async def check_releases(context: ContextTypes.DEFAULT_TYPE):
     try:
         response = requests.get(api_url, headers=get_api_headers(token), timeout=15)
         if response.status_code == 404:
-            logger.info(f"Repo {repo_name} has no releases yet.")
+            log_activity(f"Repo {repo_name} has no releases yet.")
             return
         response.raise_for_status()
         latest_release = response.json()
@@ -280,7 +310,7 @@ async def check_releases(context: ContextTypes.DEFAULT_TYPE):
         last_known_id = global_repo_info.get("last_release_id")
 
         if release_id and release_id != last_known_id:
-            logger.info(f"New release found for {repo_name}: {latest_release['tag_name']}")
+            log_activity(f"New release found for {repo_name}: {latest_release['tag_name']}")
             
             message = (
                 f"🚀 **New Release for `{repo_name}`!**\n\n"
@@ -296,15 +326,15 @@ async def check_releases(context: ContextTypes.DEFAULT_TYPE):
                     try:
                         await context.bot.send_message(chat_id=int(user_id_str), text=message, parse_mode="Markdown")
                     except error.Forbidden:
-                        logger.warning(f"User {user_id_str} has blocked the bot.")
+                        log_activity(f"User {user_id_str} has blocked the bot.", "WARNING")
                     except Exception as e:
-                        logger.error(f"Failed to send message to {user_id_str}: {e}")
+                        log_activity(f"Failed to send message to {user_id_str}: {e}", "ERROR")
             save_data(bot_data)
         else:
-            logger.info(f"No new release for {repo_name}.")
+            log_activity(f"No new release for {repo_name}.")
 
     except requests.exceptions.RequestException as e:
-        logger.error(f"Error checking {repo_name} with token from pool: {e}")
+        log_activity(f"Error checking {repo_name} with token from pool: {e}", "ERROR")
 
 async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -354,10 +384,10 @@ async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 await context.bot.send_message(chat_id=user_id, text=message, parse_mode="Markdown")
             checked_repos += 1
         except requests.exceptions.HTTPError as e:
-            logger.error(f"HTTP error on manual check for {repo_name} for user {user_id}: {e}")
+            log_activity(f"HTTP error on manual check for {repo_name} for user {user_id}: {e}", "ERROR")
             await context.bot.send_message(chat_id=user_id, text=f"⚠️ Could not check `{repo_name}`. The repository might be private, deleted, or your token may lack permissions.", parse_mode="Markdown")
         except Exception as e:
-            logger.error(f"Error in check_now_user for {repo_name}: {e}")
+            log_activity(f"Error in check_now_user for {repo_name}: {e}", "ERROR")
 
     save_data(bot_data)
     await context.bot.send_message(chat_id=user_id, text=f"✅ Finished checking {checked_repos} repositories. Found {new_releases_found} new release(s).")
@@ -376,7 +406,7 @@ def schedule_repo_check(scheduler: AsyncIOScheduler, repo_name: str, interval_ho
     job_id = f"check_{repo_name.replace('/', '_')}"
     if scheduler.get_job(job_id):
         scheduler.reschedule_job(job_id, trigger="interval", hours=interval_hours)
-        logger.info(f"Rescheduled job for {repo_name} to every {interval_hours} hours.")
+        log_activity(f"Rescheduled job for {repo_name} to every {interval_hours} hours.")
     else:
         scheduler.add_job(
             check_releases,
@@ -386,7 +416,7 @@ def schedule_repo_check(scheduler: AsyncIOScheduler, repo_name: str, interval_ho
             kwargs={"repo_name": repo_name},
             next_run_time=datetime.now() + timedelta(seconds=15)
         )
-        logger.info(f"Scheduled new job for {repo_name} every {interval_hours} hours.")
+        log_activity(f"Scheduled new job for {repo_name} every {interval_hours} hours.")
 
 def is_repo_tracked_by_anyone(repo_name: str) -> bool:
     """
@@ -415,7 +445,7 @@ def unschedule_if_unused(scheduler: AsyncIOScheduler, repo_name: str):
         job_id = f"check_{repo_name.replace('/', '_')}"
         if scheduler.get_job(job_id):
             scheduler.remove_job(job_id)
-            logger.info(f"Unscheduled job for {repo_name} as it's no longer tracked.")
+            log_activity(f"Unscheduled job for {repo_name} as it's no longer tracked.")
 
 # --- Conversation Handlers and Callbacks for Users ---
 async def add_repo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1018,7 +1048,7 @@ def main():
                  repo_intervals[repo_name] = repo_info.get("interval_hours", 24)
 
     if unique_repos:
-        logger.info(f"Rescheduling jobs for {len(unique_repos)} unique repositories...")
+        log_activity(f"Rescheduling jobs for {len(unique_repos)} unique repositories...")
         for repo_name in unique_repos:
              job_queue.run_repeating(
                 check_releases,

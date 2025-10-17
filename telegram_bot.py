@@ -738,9 +738,58 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(f"Mode: {is_public_text}", callback_data="toggle_public")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="broadcast_message")],
         [InlineKeyboardButton("👥 Manage Users", callback_data="manage_users")],
+        [InlineKeyboardButton("💾 Download Data", callback_data="download_data")],
+        [InlineKeyboardButton("📋 Download Logs", callback_data="download_logs")],
         [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="main_menu")],
     ]
     await query.edit_message_text("👑 Owner Control Panel", reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def download_data(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Sends the bot_data.json file to the owner.
+    """
+    query = update.callback_query
+    if os.path.exists(DATA_FILE):
+        await context.bot.send_document(chat_id=OWNER_ID, document=open(DATA_FILE, 'rb'))
+        await query.answer("Data file sent.")
+    else:
+        await query.answer("Data file not found.", show_alert=True)
+
+async def download_logs(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Sends the logs.json file to the owner.
+    """
+    query = update.callback_query
+    if os.path.exists(LOG_FILE):
+        await context.bot.send_document(chat_id=OWNER_ID, document=open(LOG_FILE, 'rb'))
+        await query.answer("Log file sent.")
+    else:
+        await query.answer("Log file not found.", show_alert=True)
+
+async def send_daily_backup(context: ContextTypes.DEFAULT_TYPE):
+    """Sends a daily backup of data and log files to the bot owner."""
+    log_activity("Attempting to send daily backup...")
+    try:
+        if os.path.exists(DATA_FILE):
+            await context.bot.send_document(
+                chat_id=OWNER_ID,
+                document=open(DATA_FILE, 'rb'),
+                caption=f"Daily bot data backup for {datetime.now().strftime('%Y-%m-%d')}."
+            )
+        else:
+            log_activity("Daily backup failed: bot_data.json not found.", "WARNING")
+
+        if os.path.exists(LOG_FILE):
+            await context.bot.send_document(
+                chat_id=OWNER_ID,
+                document=open(LOG_FILE, 'rb'),
+                caption=f"Daily log file backup for {datetime.now().strftime('%Y-%m-%d')}."
+            )
+        else:
+            log_activity("Log file for daily backup not found.", "WARNING")
+        log_activity("Daily backup process completed.")
+    except Exception as e:
+        log_activity(f"An error occurred during daily backup: {e}", "ERROR")
 
 async def toggle_public_mode(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1037,6 +1086,15 @@ def main():
     
     # Use the application's job_queue which has an implicit scheduler
     job_queue = application.job_queue
+
+    # Schedule the daily backup job to run every 24 hours
+    job_queue.run_repeating(
+        send_daily_backup,
+        interval=timedelta(hours=24),
+        first=datetime.now().replace(hour=0, minute=0, second=0, microsecond=0) + timedelta(days=1), # Start at midnight
+        name="daily_backup"
+    )
+    log_activity("Scheduled daily backup job.")
     
     # Reschedule jobs from saved data on startup
     unique_repos = set()
@@ -1132,9 +1190,11 @@ def main():
     application.add_handler(CallbackQueryHandler(owner_panel, pattern="^owner_panel$"))
     application.add_handler(CallbackQueryHandler(toggle_public_mode, pattern="^toggle_public$"))
     application.add_handler(CallbackQueryHandler(manage_users_panel, pattern="^manage_users$"))
+    application.add_handler(CallbackQueryHandler(download_data, pattern="^download_data$"))
+    application.add_handler(CallbackQueryHandler(download_logs, pattern="^download_logs$"))
     
 
-    logger.info("Bot started successfully!")
+    log_activity("Bot started successfully!")
     application.run_polling()
 
 

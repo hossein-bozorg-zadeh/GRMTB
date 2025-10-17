@@ -873,28 +873,26 @@ async def manage_users_panel(update: Update, context: ContextTypes.DEFAULT_TYPE)
     ]
     await query.edit_message_text(f"User Management\n\n{stats}", reply_markup=InlineKeyboardMarkup(keyboard))
     
-async def prompt_for_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE, action: str) -> int:
+async def prompt_for_user_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
-    Prompts the owner for a user ID for a specific action and returns the next state.
-
-    Args:
-        update (Update): The incoming Telegram update.
-        context (ContextTypes.DEFAULT_TYPE): The context of the bot.
-        action (str): The action to be performed.
-
-    Returns:
-        int: The next state for the conversation handler.
+    Sets the bot to expect a user ID for a specific admin action.
+    This is now a simple callback, not part of a conversation.
     """
-    action_to_state = {
-        "ban": AWAIT_BAN_ID,
-        "unban": AWAIT_UNBAN_ID,
-        "add as special": AWAIT_SPECIAL_ID,
-        "remove from special": AWAIT_UNSPECIAL_ID,
-    }
     query = update.callback_query
+    action = query.data.replace("_user", "")  # "ban_user" -> "ban"
+
+    # Store the pending action in user_data
+    context.user_data['owner_action'] = action
+
+    action_text_map = {
+        "ban": "ban",
+        "unban": "unban",
+        "add_special": "add as special",
+        "remove_special": "remove from special",
+    }
+
     await query.answer()
-    await query.edit_message_text(f"Please send the Telegram User ID of the user to {action}.")
-    return action_to_state.get(action)
+    await query.edit_message_text(f"Please send the Telegram User ID of the user to {action_text_map.get(action)}.")
 
 async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -920,7 +918,6 @@ async def ban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"User `{user_id}` is already banned.", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("Invalid User ID.")
-    return ConversationHandler.END
 
 async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -943,7 +940,6 @@ async def unban_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"User `{user_id}` is not banned.", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("Invalid User ID.")
-    return ConversationHandler.END
 
 async def add_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -968,7 +964,30 @@ async def add_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"User `{user_id}` is already a special user.", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("Invalid User ID.")
-    return ConversationHandler.END
+
+async def handle_owner_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """
+    Handles text input from the owner when a specific action is pending.
+    This acts as a simple dispatcher to avoid complex ConversationHandlers.
+    """
+    if update.effective_user.id != OWNER_ID or 'owner_action' not in context.user_data:
+        # This handler should not process messages from non-owners
+        # or when no action is pending. A more general handler could be added if needed.
+        return
+
+    action = context.user_data.pop('owner_action')
+
+    action_map = {
+        'ban': ban_user,
+        'unban': unban_user,
+        'add_special': add_special_user,
+        'remove_special': remove_special_user,
+    }
+
+    if action in action_map:
+        await action_map[action](update, context)
+    else:
+        logger.warning(f"Unknown owner action '{action}' was found in user_data.")
 
 async def remove_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -991,7 +1010,6 @@ async def remove_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE
             await update.message.reply_text(f"User `{user_id}` is not a special user.", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("Invalid User ID.")
-    return ConversationHandler.END
 
 # --- Broadcast Conversation ---
 async def broadcast_message_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1208,27 +1226,6 @@ def main():
         },
         fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(owner_panel, pattern="^owner_panel$")],
     )
-    ban_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"ban"), pattern="^ban_user$")],
-        states={AWAIT_BAN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, ban_user)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    unban_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"unban"), pattern="^unban_user$")],
-        states={AWAIT_UNBAN_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, unban_user)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    add_special_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"add as special"), pattern="^add_special$")],
-        states={AWAIT_SPECIAL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_special_user)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-    remove_special_handler = ConversationHandler(
-        entry_points=[CallbackQueryHandler(lambda u,c: prompt_for_user_id(u,c,"remove from special"), pattern="^remove_special$")],
-        states={AWAIT_UNSPECIAL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, remove_special_user)]},
-        fallbacks=[CommandHandler("cancel", cancel)],
-    )
-
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(add_repo_handler)
@@ -1236,10 +1233,9 @@ def main():
     application.add_handler(set_interval_handler)
     application.add_handler(set_token_handler)
     application.add_handler(broadcast_handler)
-    application.add_handler(ban_handler)
-    application.add_handler(unban_handler)
-    application.add_handler(add_special_handler)
-    application.add_handler(remove_special_handler)
+
+    # Central handler for owner text input
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_owner_action))
     
     # Simple callback handlers
     application.add_handler(CallbackQueryHandler(list_repos, pattern="^list_repos$"))
@@ -1248,6 +1244,10 @@ def main():
     application.add_handler(CallbackQueryHandler(owner_panel, pattern="^owner_panel$"))
     application.add_handler(CallbackQueryHandler(toggle_public_mode, pattern="^toggle_public$"))
     application.add_handler(CallbackQueryHandler(manage_users_panel, pattern="^manage_users$"))
+    application.add_handler(CallbackQueryHandler(prompt_for_user_id, pattern="^ban_user$"))
+    application.add_handler(CallbackQueryHandler(prompt_for_user_id, pattern="^unban_user$"))
+    application.add_handler(CallbackQueryHandler(prompt_for_user_id, pattern="^add_special_user$"))
+    application.add_handler(CallbackQueryHandler(prompt_for_user_id, pattern="^remove_special_user$"))
     application.add_handler(CallbackQueryHandler(download_data, pattern="^download_data$"))
     application.add_handler(CallbackQueryHandler(download_logs, pattern="^download_logs$"))
     

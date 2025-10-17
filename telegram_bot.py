@@ -185,13 +185,18 @@ async def user_is_authorized(update: Update) -> bool:
     """
     user = update.effective_user
     if not user:
+        logger.warning("user_is_authorized: update.effective_user is None.")
         return False
 
+    logger.info(f"user_is_authorized: Checking access for user {user.id}.")
+
     if user.id == OWNER_ID:
+        logger.info(f"user_is_authorized: User {user.id} is owner. Access granted.")
         get_or_create_user(user.id) # Ensure owner is in the user list
         return True
 
     if user.id in bot_data["banned_users"]:
+        logger.warning(f"user_is_authorized: User {user.id} is banned. Access denied.")
         if update.message:
             await update.message.reply_text("You have been banned from using this bot.")
         elif update.callback_query:
@@ -199,12 +204,14 @@ async def user_is_authorized(update: Update) -> bool:
         return False
 
     if not bot_data["settings"]["is_public"] and user.id not in bot_data["special_users"]:
+        logger.warning(f"user_is_authorized: Bot is private and user {user.id} is not special. Access denied.")
         if update.message:
             await update.message.reply_text("This bot is currently in private mode. Access denied.")
         elif update.callback_query:
             await update.callback_query.answer("This bot is currently in private mode. Access denied.", show_alert=True)
         return False
 
+    logger.info(f"user_is_authorized: User {user.id} is authorized. Access granted.")
     get_or_create_user(user.id)
     return True
 
@@ -355,6 +362,9 @@ async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update (Update): The incoming Telegram update.
         context (ContextTypes.DEFAULT_TYPE): The context of the bot.
     """
+    if not await user_is_authorized(update):
+        return
+
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)
@@ -470,8 +480,12 @@ async def add_repo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     Returns:
         int: The next state for the conversation handler.
     """
+    if not await user_is_authorized(update):
+        return ConversationHandler.END
+
     query = update.callback_query
     user_id = query.effective_user.id
+    logger.info(f"add_repo_prompt: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
     if not user_data.get("github_token"):
         await query.answer("Please set your GitHub token before adding repositories!", show_alert=True)
@@ -541,8 +555,12 @@ async def list_repos(update: Update, context: ContextTypes.DEFAULT_TYPE):
         update (Update): The incoming Telegram update.
         context (ContextTypes.DEFAULT_TYPE): The context of the bot.
     """
+    if not await user_is_authorized(update):
+        return
+
     query = update.callback_query
     user_id = query.effective_user.id
+    logger.info(f"list_repos: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
 
     if not user_data["repos"]:
@@ -569,9 +587,13 @@ async def prompt_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     Returns:
         int: The next state for the conversation handler.
     """
+    if not await user_is_authorized(update):
+        return ConversationHandler.END
+
     # This function now acts as the entry point for the conversation
     query = update.callback_query
     user_id = query.effective_user.id
+    logger.info(f"prompt_delete_repo: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
     
     if not user_data["repos"]:
@@ -620,6 +642,9 @@ async def prompt_set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE
     Returns:
         int: The next state for the conversation handler.
     """
+    if not await user_is_authorized(update):
+        return ConversationHandler.END
+
     query = update.callback_query
     user_id = query.effective_user.id
     user_data = get_or_create_user(user_id)

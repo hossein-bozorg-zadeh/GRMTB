@@ -60,8 +60,9 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 (
     AWAIT_REPO_ADD, AWAIT_REPO_DELETE, AWAIT_INTERVAL_REPO, AWAIT_INTERVAL_HOURS,
     AWAIT_BROADCAST_MESSAGE, AWAIT_BROADCAST_CONFIRM, AWAIT_GITHUB_TOKEN,
-    AWAIT_BAN_ID, AWAIT_UNBAN_ID, AWAIT_SPECIAL_ID, AWAIT_UNSPECIAL_ID
-) = range(11)
+    AWAIT_BAN_ID, AWAIT_UNBAN_ID, AWAIT_SPECIAL_ID, AWAIT_UNSPECIAL_ID,
+    AWAIT_FSUB_CHANNEL_ID
+) = range(12)
 
 # --- Configuration and Data Persistence ---
 OWNER_ID = 779738794
@@ -171,7 +172,23 @@ def get_or_create_user(user_id: int):
         log_activity(f"New user created: {user_id_str}")
     return bot_data["users"][user_id_str]
 
-async def user_is_authorized(update: Update) -> bool:
+async def is_user_in_channel(user_id: int, context: ContextTypes.DEFAULT_TYPE) -> bool:
+    """Checks if a user is a member of the force-subscribe channel."""
+    fsub_settings = bot_data['settings'].get('force_subscribe', {})
+    if not fsub_settings.get('enabled') or not fsub_settings.get('channel_id'):
+        return True # Feature is disabled or not configured
+
+    channel_id = fsub_settings['channel_id']
+    try:
+        member = await context.bot.get_chat_member(chat_id=channel_id, user_id=user_id)
+        return member.status in ['member', 'administrator', 'creator']
+    except error.TelegramError as e:
+        logger.error(f"Error checking channel membership for user {user_id} in channel {channel_id}: {e}")
+        # If the bot can't check (e.g., not an admin), it's safer to deny access
+        # to prevent bypassing the check. The owner will see the error in logs.
+        return False
+
+async def user_is_authorized(update: Update, context: ContextTypes.DEFAULT_TYPE) -> bool:
     """
     Checks if a user is authorized to use the bot.
 
@@ -209,6 +226,20 @@ async def user_is_authorized(update: Update) -> bool:
             await update.message.reply_text("This bot is currently in private mode. Access denied.")
         elif update.callback_query:
             await update.callback_query.answer("This bot is currently in private mode. Access denied.", show_alert=True)
+        return False
+
+    # --- Force Subscribe Check ---
+    if not await is_user_in_channel(user.id, context):
+        logger.warning(f"user_is_authorized: User {user.id} is not in the required channel. Access denied.")
+        channel_id = bot_data['settings'].get('force_subscribe', {}).get('channel_id', '')
+        # Try to create an invite link if it's a username
+        channel_link = f"https://t.me/{channel_id.lstrip('@')}" if channel_id.startswith('@') else ""
+        text = f"You must join our channel to use this bot.\n\nPlease join: {channel_link}"
+        if update.message:
+            await update.message.reply_text(text)
+        elif update.callback_query:
+            await update.callback_query.answer("You must join our channel to use this bot.", show_alert=True)
+            await context.bot.send_message(chat_id=user.id, text=text) # Send a separate message after the alert
         return False
 
     logger.info(f"user_is_authorized: User {user.id} is authorized. Access granted.")
@@ -371,7 +402,11 @@ async def check_now_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = get_or_create_user(user_id)
 
     if not user_data.get("github_token"):
-        await query.answer("Please set your GitHub token first!", show_alert=True)
+        keyboard = [[InlineKeyboardButton("🔑 Set GitHub Token", callback_data="set_github_token")]]
+        await query.edit_message_text(
+            "You need to set a GitHub Personal Access Token before you can check repositories.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     if not user_data["repos"]:
@@ -490,7 +525,11 @@ async def add_repo_prompt(update: Update, context: ContextTypes.DEFAULT_TYPE):
     logger.info(f"add_repo_prompt: Triggered by user {user_id}. Query data: {query.data}")
     user_data = get_or_create_user(user_id)
     if not user_data.get("github_token"):
-        await query.answer("Please set your GitHub token before adding repositories!", show_alert=True)
+        keyboard = [[InlineKeyboardButton("🔑 Set GitHub Token", callback_data="set_github_token")]]
+        await query.edit_message_text(
+            "You need to set a GitHub Personal Access Token before you can add repositories.",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return ConversationHandler.END
     await query.edit_message_text("Please send the full GitHub repository URL (e.g., https://github.com/owner/repo).")
     return AWAIT_REPO_ADD
@@ -567,7 +606,11 @@ async def list_repos(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_data = get_or_create_user(user_id)
 
     if not user_data["repos"]:
-        await query.edit_message_text("You are not tracking any repositories.", reply_markup=main_menu_markup(user_id))
+        keyboard = [[InlineKeyboardButton("➕ Add a Repository", callback_data="add_repo")]]
+        await query.edit_message_text(
+            "You are not tracking any repositories yet. Would you like to add one?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return
 
     message = "📋 Your Tracked Repositories:\n\n"
@@ -601,7 +644,11 @@ async def prompt_delete_repo(update: Update, context: ContextTypes.DEFAULT_TYPE)
     user_data = get_or_create_user(user_id)
     
     if not user_data["repos"]:
-        await query.edit_message_text("You have no repositories to delete.", reply_markup=main_menu_markup(user_id))
+        keyboard = [[InlineKeyboardButton("➕ Add a Repository", callback_data="add_repo")]]
+        await query.edit_message_text(
+            "You have no repositories to delete. Would you like to add one?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return ConversationHandler.END
 
     keyboard = [[InlineKeyboardButton(repo, callback_data=f"del_repo_{repo}")] for repo in user_data["repos"]]
@@ -655,7 +702,11 @@ async def prompt_set_interval(update: Update, context: ContextTypes.DEFAULT_TYPE
     user_data = get_or_create_user(user_id)
 
     if not user_data["repos"]:
-        await query.edit_message_text("You have no repositories to configure.", reply_markup=main_menu_markup(user_id))
+        keyboard = [[InlineKeyboardButton("➕ Add a Repository", callback_data="add_repo")]]
+        await query.edit_message_text(
+            "You have no repositories to configure. Would you like to add one?",
+            reply_markup=InlineKeyboardMarkup(keyboard)
+        )
         return ConversationHandler.END
         
     keyboard = [[InlineKeyboardButton(f"{repo} ({info['interval_hours']}h)", callback_data=f"set_interval_{repo}")] for repo, info in user_data["repos"].items()]
@@ -782,6 +833,7 @@ async def owner_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton(f"Mode: {is_public_text}", callback_data="toggle_public")],
         [InlineKeyboardButton("📢 Broadcast Message", callback_data="broadcast_message")],
         [InlineKeyboardButton("👥 Manage Users", callback_data="manage_users")],
+        [InlineKeyboardButton("⚙️ Force Subscribe", callback_data="force_subscribe_panel")],
         [InlineKeyboardButton("💾 Download Data", callback_data="download_data")],
         [InlineKeyboardButton("📋 Download Logs", callback_data="download_logs")],
         [InlineKeyboardButton("⬅️ Back to Main Menu", callback_data="main_menu")],
@@ -964,6 +1016,83 @@ async def add_special_user(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text(f"User `{user_id}` is already a special user.", parse_mode="Markdown")
     except ValueError:
         await update.message.reply_text("Invalid User ID.")
+
+async def force_subscribe_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Displays the force subscribe settings panel."""
+    query = update.callback_query
+    await query.answer()
+
+    fsub_settings = bot_data['settings'].get('force_subscribe', {})
+    status = "✅ Enabled" if fsub_settings.get('enabled') else "❌ Disabled"
+    channel = fsub_settings.get('channel_id', 'Not Set')
+
+    text = (
+        f"⚙️ **Force Subscribe Settings**\n\n"
+        f"Users must join a specific channel to use the bot.\n\n"
+        f"**Status:** {status}\n"
+        f"**Channel:** `{channel}`"
+    )
+
+    keyboard = [
+        [InlineKeyboardButton(f"Toggle: {status}", callback_data="toggle_fsub")],
+        [InlineKeyboardButton("Set Channel ID / Username", callback_data="set_fsub_channel")],
+        [InlineKeyboardButton("⬅️ Back to Owner Panel", callback_data="owner_panel")],
+    ]
+
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard), parse_mode="Markdown")
+
+async def toggle_force_subscribe(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Toggles the force subscribe feature on or off."""
+    query = update.callback_query
+
+    if 'force_subscribe' not in bot_data['settings']:
+        bot_data['settings']['force_subscribe'] = {'enabled': False, 'channel_id': None}
+
+    fsub_settings = bot_data['settings']['force_subscribe']
+    fsub_settings['enabled'] = not fsub_settings.get('enabled', False)
+    save_data(bot_data)
+
+    await query.answer(f"Force Subscribe is now {'Enabled' if fsub_settings['enabled'] else 'Disabled'}.")
+    await force_subscribe_panel(update, context)
+
+async def prompt_set_channel_id(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Prompts the owner to send the channel ID for force subscribe."""
+    query = update.callback_query
+    await query.answer()
+    await query.edit_message_text("Please send the channel username (e.g., @mychannel) or the channel's numerical ID.")
+    return AWAIT_FSUB_CHANNEL_ID
+
+async def set_force_channel(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Saves the channel ID for the force subscribe feature."""
+    channel_id = update.message.text.strip()
+
+    if 'force_subscribe' not in bot_data['settings']:
+        bot_data['settings']['force_subscribe'] = {'enabled': False, 'channel_id': None}
+
+    bot_data['settings']['force_subscribe']['channel_id'] = channel_id
+    save_data(bot_data)
+
+    await update.message.reply_text(f"✅ Force Subscribe channel has been set to `{channel_id}`.", parse_mode="Markdown")
+
+    # Create a fake Update object to call the panel function
+    from unittest.mock import Mock
+    query = Mock()
+    query.message.edit_message_text = context.bot.edit_message_text
+    query.effective_user.id = update.effective_user.id
+    query.answer = context.bot.answer_callback_query
+
+    # This is a bit of a hack to redisplay the panel
+    # In a real scenario, you might want to structure this differently
+    # but for simplicity, this will work.
+    # We need to create a mock update that has a callback_query
+    mock_update = update
+    mock_update.callback_query = query
+
+    # After setting the channel, show the main owner panel again
+    await update.message.reply_text("👑 Owner Control Panel", reply_markup=owner_panel_markup())
+
+    return ConversationHandler.END
+
 
 async def handle_owner_action(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """
@@ -1224,7 +1353,11 @@ def main():
             AWAIT_BROADCAST_MESSAGE: [MessageHandler(filters.TEXT & ~filters.COMMAND, broadcast_message_confirm)],
             AWAIT_BROADCAST_CONFIRM: [CallbackQueryHandler(broadcast_send, pattern="^broadcast_send$")],
         },
-        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(owner_panel, pattern="^owner_panel$")],
+        fallbacks=[
+            CommandHandler("cancel", cancel),
+            CallbackQueryHandler(owner_panel, pattern="^owner_panel$"),
+            CallbackQueryHandler(main_menu_handler, pattern="^main_menu$")
+        ],
     )
 
     application.add_handler(CommandHandler("start", start))
@@ -1234,8 +1367,9 @@ def main():
     application.add_handler(set_token_handler)
     application.add_handler(broadcast_handler)
 
-    # Central handler for owner text input
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_owner_action))
+    # Central handler for owner text input. `block=False` allows the update to be processed
+    # by other handlers like ConversationHandlers if this one doesn't handle it.
+    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_owner_action, block=False))
     
     # Simple callback handlers
     application.add_handler(CallbackQueryHandler(list_repos, pattern="^list_repos$"))
@@ -1250,6 +1384,16 @@ def main():
     application.add_handler(CallbackQueryHandler(prompt_for_user_id, pattern="^remove_special_user$"))
     application.add_handler(CallbackQueryHandler(download_data, pattern="^download_data$"))
     application.add_handler(CallbackQueryHandler(download_logs, pattern="^download_logs$"))
+    application.add_handler(CallbackQueryHandler(force_subscribe_panel, pattern="^force_subscribe_panel$"))
+    application.add_handler(CallbackQueryHandler(toggle_force_subscribe, pattern="^toggle_fsub$"))
+
+    # Handler for setting the force-subscribe channel
+    set_fsub_channel_handler = ConversationHandler(
+        entry_points=[CallbackQueryHandler(prompt_set_channel_id, pattern="^set_fsub_channel$")],
+        states={AWAIT_FSUB_CHANNEL_ID: [MessageHandler(filters.TEXT & ~filters.COMMAND, set_force_channel)]},
+        fallbacks=[CommandHandler("cancel", cancel), CallbackQueryHandler(force_subscribe_panel, pattern="^force_subscribe_panel$")],
+    )
+    application.add_handler(set_fsub_channel_handler)
     
 
     log_activity("Bot started successfully!")

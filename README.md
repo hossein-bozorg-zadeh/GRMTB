@@ -13,6 +13,7 @@ A Python-powered Telegram bot that automatically monitors GitHub repositories fo
 - [Installation](#installation)
 - [Configuration](#configuration)
 - [Data Persistence](#data-persistence)
+- [Logging](#logging)
 - [File Structure](#file-structure)
 - [License](#license)
 
@@ -106,6 +107,12 @@ The bot is configured by setting the `BOT_TOKEN` and `OWNER_ID` variables direct
 
 ---
 
+## 💾 Logging
+
+All bot activities, including errors and new release notifications, are logged to a `logs.json` file. This file is created automatically in the same directory as the script.
+
+---
+
 ## 💾 Data Persistence
 
 The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file.
@@ -144,6 +151,7 @@ The data structure is as follows:
 .
 ├── telegram_bot.py        # Main bot source code
 ├── bot_data.json          # Persistent user and repository data (created on first run)
+├── logs.json              # Log file for all bot activities
 ├── requirements.txt       # Dependencies
 └── README.md              # This file
 ```

@@ -31,6 +31,17 @@ import json
 from datetime import datetime, timedelta
 import asyncio
 
+# --- Logging Setup ---
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler("bot.log"),
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
 import requests
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, error
 from telegram.ext import (

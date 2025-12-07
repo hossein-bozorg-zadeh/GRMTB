@@ -1,0 +1,33 @@
+[phases.setup]
+nixPkgs = ["python311"]
+
+[phases.install]
+cmds = ["pip install -r requirements.txt"]
+
+[start]
+cmd = "python bot.py"
+```
+
+## Alternative: Use Railway's Build Settings
+
+If adding files doesn't work, configure manually in Railway:
+
+1. Go to your service settings in Railway
+2. Click on **"Settings"** tab
+3. Scroll to **"Build"** section
+4. Set:
+   - **Build Command:** `pip install -r requirements.txt`
+   - **Start Command:** `python bot.py`
+5. In **"Deploy"** section, set **Service Type** to **"Worker"** (not Web Service)
+
+## Check Your Repository Structure
+
+Make sure your GitHub repo has:
+```
+your-repo/
+├── bot.py
+├── requirements.txt
+├── Procfile
+├── runtime.txt
+├── nixpacks.toml (optional but recommended)
+└── .gitignore

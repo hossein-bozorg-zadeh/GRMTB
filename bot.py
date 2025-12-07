@@ -751,6 +751,10 @@ async def check_all_repos(context: ContextTypes.DEFAULT_TYPE):
             logger.error(f"Error in check loop: {e}")
             await asyncio.sleep(300)
 
+async def start_background_checks(application):
+    await asyncio.sleep(10)
+    await check_all_repos(application)
+
 def main():
     global OWNER_ID
     
@@ -776,7 +780,7 @@ def main():
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_message))
     
-    application.job_queue.run_once(lambda context: asyncio.create_task(check_all_repos(context)), 10)
+    asyncio.get_event_loop().create_task(start_background_checks(application))
     
     logger.info("Bot started successfully!")
     print("Bot started successfully!")

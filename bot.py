@@ -6,6 +6,7 @@ import logging
 from datetime import datetime, timedelta
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram.error import TelegramError
 import aiohttp
 from io import BytesIO
 
@@ -21,17 +22,21 @@ logger = logging.getLogger(__name__)
 
 DATA_FILE = 'bot_data.json'
 OWNER_ID = None
+REQUIRED_CHANNEL = None
+LOG_CHANNEL = None
 
 class BotData:
     def __init__(self):
         self.users = {}
         self.repos = {}
         self.user_tokens = {}
+        self.user_gitlab_tokens = {}
         self.check_intervals = {}
         self.last_releases = {}
         self.bot_public = True
         self.special_users = set()
         self.banned_users = set()
+        self.repo_types = {}
         self.load_data()
     
     def load_data(self):
@@ -42,11 +47,13 @@ class BotData:
                     self.users = data.get('users', {})
                     self.repos = data.get('repos', {})
                     self.user_tokens = data.get('user_tokens', {})
+                    self.user_gitlab_tokens = data.get('user_gitlab_tokens', {})
                     self.check_intervals = data.get('check_intervals', {})
                     self.last_releases = data.get('last_releases', {})
                     self.bot_public = data.get('bot_public', True)
                     self.special_users = set(data.get('special_users', []))
                     self.banned_users = set(data.get('banned_users', []))
+                    self.repo_types = data.get('repo_types', {})
                 logger.info("Data loaded successfully")
             except Exception as e:
                 logger.error(f"Error loading data: {e}")
@@ -56,11 +63,13 @@ class BotData:
             'users': self.users,
             'repos': self.repos,
             'user_tokens': self.user_tokens,
+            'user_gitlab_tokens': self.user_gitlab_tokens,
             'check_intervals': self.check_intervals,
             'last_releases': self.last_releases,
             'bot_public': self.bot_public,
             'special_users': list(self.special_users),
-            'banned_users': list(self.banned_users)
+            'banned_users': list(self.banned_users),
+            'repo_types': self.repo_types
         }
         try:
             with open(DATA_FILE, 'w') as f:
@@ -74,11 +83,13 @@ class BotData:
             'users': self.users,
             'repos': self.repos,
             'user_tokens': self.user_tokens,
+            'user_gitlab_tokens': self.user_gitlab_tokens,
             'check_intervals': self.check_intervals,
             'last_releases': self.last_releases,
             'bot_public': self.bot_public,
             'special_users': list(self.special_users),
             'banned_users': list(self.banned_users),
+            'repo_types': self.repo_types,
             'export_date': datetime.now().isoformat()
         }, indent=2)
     
@@ -88,11 +99,13 @@ class BotData:
             self.users = data.get('users', {})
             self.repos = data.get('repos', {})
             self.user_tokens = data.get('user_tokens', {})
+            self.user_gitlab_tokens = data.get('user_gitlab_tokens', {})
             self.check_intervals = data.get('check_intervals', {})
             self.last_releases = data.get('last_releases', {})
             self.bot_public = data.get('bot_public', True)
             self.special_users = set(data.get('special_users', []))
             self.banned_users = set(data.get('banned_users', []))
+            self.repo_types = data.get('repo_types', {})
             self.save_data()
             logger.info("Data imported successfully")
             return True
@@ -112,11 +125,38 @@ def can_use_bot(user_id):
         return True
     return False
 
+async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if not REQUIRED_CHANNEL:
+        return True
+    
+    user_id = update.effective_user.id
+    
+    if is_owner(user_id) or user_id in bot_data.special_users:
+        return True
+    
+    try:
+        member = await context.bot.get_chat_member(REQUIRED_CHANNEL, user_id)
+        if member.status in ['member', 'administrator', 'creator']:
+            return True
+        return False
+    except Exception as e:
+        logger.error(f"Error checking channel membership: {e}")
+        return False
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = str(update.effective_user.id)
     
     if not can_use_bot(int(user_id)):
         await update.message.reply_text("🔒 Bot is currently private. You don't have access.")
+        return
+    
+    if not await check_channel_membership(update, context):
+        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "⚠️ You must join our channel to use this bot.\n\nClick the button below to join:",
+            reply_markup=reply_markup
+        )
         return
     
     if user_id not in bot_data.users:
@@ -127,7 +167,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("📋 My Repos", callback_data='my_repos')],
         [InlineKeyboardButton("➕ Add Repo", callback_data='add_repo')],
-        [InlineKeyboardButton("🔑 Set GitHub Token", callback_data='set_token')],
+        [InlineKeyboardButton("🔑 Set Tokens", callback_data='set_tokens')],
         [InlineKeyboardButton("⏱ Set Check Interval", callback_data='set_interval')],
         [InlineKeyboardButton("🔄 Check Now", callback_data='check_now')]
     ]
@@ -136,7 +176,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('🤖 GitHub Release Notifier Bot\n\nSelect an option:', reply_markup=reply_markup)
+    await update.message.reply_text('🤖 GitHub/GitLab Release Notifier Bot\n\nSelect an option:', reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -147,18 +187,27 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text("🔒 Bot is currently private. You don't have access.")
         return
     
+    if not await check_channel_membership(update, context):
+        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text(
+            "⚠️ You must join our channel to use this bot.\n\nClick the button below to join:",
+            reply_markup=reply_markup
+        )
+        return
+    
     if query.data == 'main_menu':
         keyboard = [
             [InlineKeyboardButton("📋 My Repos", callback_data='my_repos')],
             [InlineKeyboardButton("➕ Add Repo", callback_data='add_repo')],
-            [InlineKeyboardButton("🔑 Set GitHub Token", callback_data='set_token')],
+            [InlineKeyboardButton("🔑 Set Tokens", callback_data='set_tokens')],
             [InlineKeyboardButton("⏱ Set Check Interval", callback_data='set_interval')],
             [InlineKeyboardButton("🔄 Check Now", callback_data='check_now')]
         ]
         if is_owner(int(user_id)):
             keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text('🤖 GitHub Release Notifier Bot\n\nSelect an option:', reply_markup=reply_markup)
+        await query.edit_message_text('🤖 GitHub/GitLab Release Notifier Bot\n\nSelect an option:', reply_markup=reply_markup)
     
     elif query.data == 'my_repos':
         user_repos = bot_data.repos.get(user_id, [])
@@ -168,7 +217,9 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             text = "📋 Your Repositories:\n\n"
             for idx, repo in enumerate(user_repos, 1):
                 interval = bot_data.check_intervals.get(f"{user_id}_{repo}", 24)
-                text += f"{idx}. {repo} (Check: {interval}h)\n"
+                repo_type = bot_data.repo_types.get(f"{user_id}_{repo}", 'github')
+                icon = "🐙" if repo_type == 'github' else "🦊"
+                text += f"{idx}. {icon} {repo} (Check: {interval}h)\n"
         
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='main_menu')]]
         if user_repos:
@@ -177,16 +228,46 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(text, reply_markup=reply_markup)
     
     elif query.data == 'add_repo':
-        context.user_data['awaiting'] = 'repo'
+        keyboard = [
+            [InlineKeyboardButton("🐙 GitHub Repository", callback_data='add_github')],
+            [InlineKeyboardButton("🦊 GitLab Repository", callback_data='add_gitlab')],
+            [InlineKeyboardButton("❌ Cancel", callback_data='main_menu')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text('➕ Add Repository\n\nSelect platform:', reply_markup=reply_markup)
+    
+    elif query.data == 'add_github':
+        context.user_data['awaiting'] = 'github_repo'
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='main_menu')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text('➕ Add Repository\n\nSend the repository in format: owner/repo\nExample: torvalds/linux', reply_markup=reply_markup)
+        await query.edit_message_text('➕ Add GitHub Repository\n\nSend the repository in format: owner/repo\nExample: torvalds/linux', reply_markup=reply_markup)
     
-    elif query.data == 'set_token':
-        context.user_data['awaiting'] = 'token'
+    elif query.data == 'add_gitlab':
+        context.user_data['awaiting'] = 'gitlab_repo'
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text('➕ Add GitLab Repository\n\nSend the repository in format: owner/repo\nExample: gitlab-org/gitlab', reply_markup=reply_markup)
+    
+    elif query.data == 'set_tokens':
+        keyboard = [
+            [InlineKeyboardButton("🐙 Set GitHub Token", callback_data='set_github_token')],
+            [InlineKeyboardButton("🦊 Set GitLab Token", callback_data='set_gitlab_token')],
+            [InlineKeyboardButton("🔙 Back", callback_data='main_menu')]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text('🔑 Set API Tokens\n\nSelect platform:', reply_markup=reply_markup)
+    
+    elif query.data == 'set_github_token':
+        context.user_data['awaiting'] = 'github_token'
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='set_tokens')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text('🔑 Set GitHub Token\n\nSend your GitHub personal access token.\n\nGet one from: https://github.com/settings/tokens', reply_markup=reply_markup)
+    
+    elif query.data == 'set_gitlab_token':
+        context.user_data['awaiting'] = 'gitlab_token'
+        keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='set_tokens')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await query.edit_message_text('🔑 Set GitLab Token\n\nSend your GitLab personal access token.\n\nGet one from: https://gitlab.com/-/profile/personal_access_tokens', reply_markup=reply_markup)
     
     elif query.data == 'set_interval':
         user_repos = bot_data.repos.get(user_id, [])
@@ -200,8 +281,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "⏱ Set Check Interval\n\nSelect a repository:\n\n"
         keyboard = []
         for idx, repo in enumerate(user_repos, 1):
-            text += f"{idx}. {repo}\n"
-            keyboard.append([InlineKeyboardButton(f"{idx}. {repo}", callback_data=f'interval_select_{repo}')])
+            repo_type = bot_data.repo_types.get(f"{user_id}_{repo}", 'github')
+            icon = "🐙" if repo_type == 'github' else "🦊"
+            text += f"{idx}. {icon} {repo}\n"
+            keyboard.append([InlineKeyboardButton(f"{idx}. {icon} {repo}", callback_data=f'interval_select_{repo}')])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='main_menu')])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text, reply_markup=reply_markup)
@@ -236,8 +319,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         text = "🗑 Delete Repository\n\nSelect a repository to delete:\n\n"
         keyboard = []
         for idx, repo in enumerate(user_repos, 1):
-            text += f"{idx}. {repo}\n"
-            keyboard.append([InlineKeyboardButton(f"🗑 {repo}", callback_data=f'delete_{repo}')])
+            repo_type = bot_data.repo_types.get(f"{user_id}_{repo}", 'github')
+            icon = "🐙" if repo_type == 'github' else "🦊"
+            text += f"{idx}. {icon} {repo}\n"
+            keyboard.append([InlineKeyboardButton(f"🗑 {icon} {repo}", callback_data=f'delete_{repo}')])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='my_repos')])
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(text, reply_markup=reply_markup)
@@ -248,6 +333,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             bot_data.repos[user_id].remove(repo)
             bot_data.check_intervals.pop(f"{user_id}_{repo}", None)
             bot_data.last_releases.pop(f"{user_id}_{repo}", None)
+            bot_data.repo_types.pop(f"{user_id}_{repo}", None)
             bot_data.save_data()
             keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data='main_menu')]]
             reply_markup = InlineKeyboardMarkup(keyboard)
@@ -262,10 +348,13 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await query.edit_message_text("You have no repositories to check.", reply_markup=reply_markup)
             return
         
-        if user_id not in bot_data.user_tokens:
+        github_token = bot_data.user_tokens.get(user_id)
+        gitlab_token = bot_data.user_gitlab_tokens.get(user_id)
+        
+        if not github_token and not gitlab_token:
             keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='main_menu')]]
             reply_markup = InlineKeyboardMarkup(keyboard)
-            await query.edit_message_text("You need to set your GitHub token first.", reply_markup=reply_markup)
+            await query.edit_message_text("You need to set at least one API token first.", reply_markup=reply_markup)
             return
         
         await query.edit_message_text("🔄 Checking for updates...")
@@ -280,92 +369,18 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         logger.info(f"User {user_id} manually checked {checked} repos")
     
     elif query.data.startswith('download_asset_'):
-        parts = query.data.replace('download_asset_', '').split('_', 2)
+        parts = query.data.replace('download_asset_', '').split('_', 3)
         user_id_data = parts[0]
-        repo = parts[1]
-        asset_id = parts[2]
+        platform = parts[1]
+        repo = parts[2]
+        asset_id = parts[3]
         
         if user_id_data != user_id:
             await query.answer("This is not your download.")
             return
         
         await query.answer("Downloading... Please wait.")
-        
-        if user_id not in bot_data.user_tokens:
-            await query.edit_message_text("❌ GitHub token not set.")
-            return
-        
-        token = bot_data.user_tokens[user_id]
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    'Authorization': f'token {token}',
-                    'Accept': 'application/octet-stream'
-                }
-                
-                url = f'https://api.github.com/repos/{repo}/releases/assets/{asset_id}'
-                async with session.get(url, headers=headers, allow_redirects=True) as response:
-                    if response.status == 200:
-                        file_data = await response.read()
-                        
-                        content_disposition = response.headers.get('Content-Disposition', '')
-                        filename = 'download'
-                        if 'filename=' in content_disposition:
-                            filename = content_disposition.split('filename=')[1].strip('"')
-                        
-                        if len(file_data) > 50 * 1024 * 1024:
-                            await context.bot.send_message(
-                                chat_id=int(user_id),
-                                text=f"❌ File is too large to send via Telegram (>50MB).\n\nDownload directly: {response.url}"
-                            )
-                        else:
-                            await context.bot.send_document(
-                                chat_id=int(user_id),
-                                document=BytesIO(file_data),
-                                filename=filename,
-                                caption=f"📦 {filename}"
-                            )
-                            logger.info(f"User {user_id} downloaded asset {asset_id} from {repo}")
-                    else:
-                        await context.bot.send_message(
-                            chat_id=int(user_id),
-                            text=f"❌ Failed to download file. Status: {response.status}"
-                        )
-        except Exception as e:
-            logger.error(f"Download error for user {user_id}: {e}")
-            await context.bot.send_message(
-                chat_id=int(user_id),
-                text=f"❌ Download failed: {str(e)}"
-            )
-    
-    elif query.data.startswith('download_all_'):
-        parts = query.data.replace('download_all_', '').split('_', 1)
-        user_id_data = parts[0]
-        repo = parts[1]
-        
-        if user_id_data != user_id:
-            await query.answer("This is not your download.")
-            return
-        
-        await query.answer("Downloading all files... Please wait.")
-        
-        release_data = context.user_data.get(f'release_{repo}')
-        if not release_data:
-            await query.edit_message_text("❌ Release data not found.")
-            return
-        
-        assets = release_data.get('assets', [])
-        if not assets:
-            await query.edit_message_text("❌ No assets found.")
-            return
-        
-        for asset in assets:
-            asset_id = asset['id']
-            callback_data = f'download_asset_{user_id}_{repo}_{asset_id}'
-            fake_query = type('obj', (object,), {'data': callback_data, 'from_user': query.from_user, 'answer': query.answer, 'edit_message_text': query.edit_message_text})()
-            await button_callback(update, context)
-            await asyncio.sleep(1)
+        await download_asset(context, user_id, platform, repo, asset_id)
     
     elif query.data == 'admin_panel':
         if not is_owner(int(user_id)):
@@ -388,6 +403,10 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         text = f"👑 Admin Panel\n\nBot Status: {status}\nTotal Users: {total_users}\nSpecial Users: {special_users}\nBanned Users: {banned_users}"
+        if REQUIRED_CHANNEL:
+            text += f"\n\nRequired Channel: {REQUIRED_CHANNEL}"
+        if LOG_CHANNEL:
+            text += f"\nLog Channel: {LOG_CHANNEL}"
         await query.edit_message_text(text, reply_markup=reply_markup)
     
     elif query.data == 'toggle_public':
@@ -515,9 +534,18 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("🔒 Bot is currently private. You don't have access.")
         return
     
+    if not await check_channel_membership(update, context):
+        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{REQUIRED_CHANNEL.replace('@', '')}")]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(
+            "⚠️ You must join our channel to use this bot.\n\nClick the button below to join:",
+            reply_markup=reply_markup
+        )
+        return
+    
     awaiting = context.user_data.get('awaiting')
     
-    if awaiting == 'repo':
+    if awaiting == 'github_repo':
         repo = update.message.text.strip()
         if '/' not in repo or repo.count('/') != 1:
             await update.message.reply_text('❌ Invalid format. Use: owner/repo')
@@ -532,15 +560,40 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         
         bot_data.repos[user_id].append(repo)
         bot_data.check_intervals[f"{user_id}_{repo}"] = 24
+        bot_data.repo_types[f"{user_id}_{repo}"] = 'github'
         bot_data.save_data()
         
         keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data='main_menu')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(f'✅ Repository {repo} added successfully!\nDefault check interval: 24 hours', reply_markup=reply_markup)
+        await update.message.reply_text(f'✅ GitHub repository {repo} added successfully!\nDefault check interval: 24 hours', reply_markup=reply_markup)
         context.user_data.pop('awaiting', None)
-        logger.info(f"User {user_id} added repo {repo}")
+        logger.info(f"User {user_id} added GitHub repo {repo}")
     
-    elif awaiting == 'token':
+    elif awaiting == 'gitlab_repo':
+        repo = update.message.text.strip()
+        if '/' not in repo or repo.count('/') != 1:
+            await update.message.reply_text('❌ Invalid format. Use: owner/repo')
+            return
+        
+        if user_id not in bot_data.repos:
+            bot_data.repos[user_id] = []
+        
+        if repo in bot_data.repos[user_id]:
+            await update.message.reply_text('❌ Repository already added.')
+            return
+        
+        bot_data.repos[user_id].append(repo)
+        bot_data.check_intervals[f"{user_id}_{repo}"] = 24
+        bot_data.repo_types[f"{user_id}_{repo}"] = 'gitlab'
+        bot_data.save_data()
+        
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data='main_menu')]]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        await update.message.reply_text(f'✅ GitLab repository {repo} added successfully!\nDefault check interval: 24 hours', reply_markup=reply_markup)
+        context.user_data.pop('awaiting', None)
+        logger.info(f"User {user_id} added GitLab repo {repo}")
+    
+    elif awaiting == 'github_token':
         token = update.message.text.strip()
         bot_data.user_tokens[user_id] = token
         bot_data.save_data()
@@ -552,239 +605,14 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting', None)
         logger.info(f"User {user_id} set GitHub token")
     
-    elif awaiting == 'add_special':
-        if not is_owner(int(user_id)):
-            return
-        try:
-            special_user_id = int(update.message.text.strip())
-            bot_data.special_users.add(special_user_id)
-            bot_data.save_data()
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='manage_users')]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f'✅ User {special_user_id} added as special user.', reply_markup=reply_markup)
-            logger.info(f"Owner added special user {special_user_id}")
-        except ValueError:
-            await update.message.reply_text('❌ Invalid user ID.')
-        context.user_data.pop('awaiting', None)
-    
-    elif awaiting == 'ban_user':
-        if not is_owner(int(user_id)):
-            return
-        try:
-            ban_user_id = int(update.message.text.strip())
-            bot_data.banned_users.add(ban_user_id)
-            bot_data.save_data()
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='manage_users')]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f'✅ User {ban_user_id} has been banned.', reply_markup=reply_markup)
-            logger.info(f"Owner banned user {ban_user_id}")
-        except ValueError:
-            await update.message.reply_text('❌ Invalid user ID.')
-        context.user_data.pop('awaiting', None)
-    
-    elif awaiting == 'unban_user':
-        if not is_owner(int(user_id)):
-            return
-        try:
-            unban_user_id = int(update.message.text.strip())
-            bot_data.banned_users.discard(unban_user_id)
-            bot_data.save_data()
-            keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='manage_users')]]
-            reply_markup = InlineKeyboardMarkup(keyboard)
-            await update.message.reply_text(f'✅ User {unban_user_id} has been unbanned.', reply_markup=reply_markup)
-            logger.info(f"Owner unbanned user {unban_user_id}")
-        except ValueError:
-            await update.message.reply_text('❌ Invalid user ID.')
-        context.user_data.pop('awaiting', None)
-    
-    elif awaiting == 'update_message':
-        if not is_owner(int(user_id)):
-            return
-        message = update.message.text
-        sent = 0
-        for uid in bot_data.users.keys():
-            try:
-                await context.bot.send_message(chat_id=int(uid), text=f"📢 Bot Update\n\n{message}")
-                sent += 1
-            except Exception as e:
-                logger.error(f"Failed to send to {uid}: {e}")
+    elif awaiting == 'gitlab_token':
+        token = update.message.text.strip()
+        bot_data.user_gitlab_tokens[user_id] = token
+        bot_data.save_data()
+        await update.message.delete()
         
-        keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]]
+        keyboard = [[InlineKeyboardButton("🔙 Back to Menu", callback_data='main_menu')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await update.message.reply_text(f'✅ Update message sent to {sent} users.', reply_markup=reply_markup)
+        await update.message.reply_text('✅ GitLab token saved successfully!', reply_markup=reply_markup)
         context.user_data.pop('awaiting', None)
-        logger.info(f"Owner sent update message to {sent} users")
-    
-    elif awaiting == 'import_data':
-        if not is_owner(int(user_id)):
-            return
-        
-        if update.message.document:
-            file = await context.bot.get_file(update.message.document.file_id)
-            file_data = await file.download_as_bytearray()
-            data_str = file_data.decode('utf-8')
-            
-            if bot_data.import_data(data_str):
-                keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text('✅ Data imported successfully!', reply_markup=reply_markup)
-                logger.info("Owner imported data")
-            else:
-                keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]]
-                reply_markup = InlineKeyboardMarkup(keyboard)
-                await update.message.reply_text('❌ Failed to import data. Check format.', reply_markup=reply_markup)
-        else:
-            await update.message.reply_text('❌ Please send a JSON file.')
-        
-        context.user_data.pop('awaiting', None)
-
-async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, repo: str, force: bool = False):
-    key = f"{user_id}_{repo}"
-    
-    if user_id not in bot_data.user_tokens:
-        return
-    
-    token = bot_data.user_tokens[user_id]
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            headers = {
-                'Authorization': f'token {token}',
-                'Accept': 'application/vnd.github.v3+json'
-            }
-            
-            url = f'https://api.github.com/repos/{repo}/releases/latest'
-            async with session.get(url, headers=headers) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    release_tag = data.get('tag_name')
-                    release_name = data.get('name') or release_tag
-                    release_url = data.get('html_url')
-                    published_at = data.get('published_at')
-                    assets = data.get('assets', [])
-                    
-                    last_release = bot_data.last_releases.get(key)
-                    
-                    if force or last_release != release_tag:
-                        bot_data.last_releases[key] = release_tag
-                        bot_data.save_data()
-                        
-                        if not force and last_release:
-                            message = f"🎉 New Release for {repo}!\n\n"
-                            message += f"📦 {release_name}\n"
-                            message += f"🏷 Tag: {release_tag}\n"
-                            message += f"📅 Published: {published_at}\n"
-                            message += f"🔗 {release_url}\n"
-                            
-                            if assets:
-                                message += f"\n📥 {len(assets)} file(s) available"
-                                
-                                keyboard = []
-                                
-                                if len(assets) == 1:
-                                    asset = assets[0]
-                                    keyboard.append([InlineKeyboardButton(
-                                        f"📥 Download {asset['name']}", 
-                                        callback_data=f"download_asset_{user_id}_{repo}_{asset['id']}"
-                                    )])
-                                else:
-                                    for idx, asset in enumerate(assets[:10], 1):
-                                        asset_name = asset['name']
-                                        asset_size = asset['size'] / 1024 / 1024
-                                        button_text = f"📥 {asset_name} ({asset_size:.1f}MB)"
-                                        if len(button_text) > 60:
-                                            button_text = button_text[:57] + "..."
-                                        
-                                        keyboard.append([InlineKeyboardButton(
-                                            button_text,
-                                            callback_data=f"download_asset_{user_id}_{repo}_{asset['id']}"
-                                        )])
-                                    
-                                    if len(assets) > 1:
-                                        keyboard.append([InlineKeyboardButton(
-                                            "📦 Download All Files",
-                                            callback_data=f"download_all_{user_id}_{repo}"
-                                        )])
-                                
-                                reply_markup = InlineKeyboardMarkup(keyboard)
-                                
-                                context.user_data[f'release_{repo}'] = data
-                                
-                                await context.bot.send_message(
-                                    chat_id=int(user_id), 
-                                    text=message,
-                                    reply_markup=reply_markup
-                                )
-                                logger.info(f"Sent release notification to {user_id} for {repo}")
-                            else:
-                                await context.bot.send_message(chat_id=int(user_id), text=message)
-                                logger.info(f"Sent release notification to {user_id} for {repo} (no assets)")
-                
-                elif response.status == 404:
-                    logger.info(f"No releases found for {repo}")
-                else:
-                    logger.warning(f"GitHub API returned status {response.status} for {repo}")
-    except Exception as e:
-        logger.error(f"Error checking {repo} for user {user_id}: {e}")
-
-async def check_all_repos(context: ContextTypes.DEFAULT_TYPE):
-    while True:
-        try:
-            for user_id, repos in bot_data.repos.items():
-                for repo in repos:
-                    key = f"{user_id}_{repo}"
-                    interval = bot_data.check_intervals.get(key, 24)
-                    
-                    last_check_key = f"last_check_{key}"
-                    last_check = context.bot_data.get(last_check_key)
-                    
-                    now = datetime.now()
-                    
-                    if last_check is None or (now - last_check) >= timedelta(hours=interval):
-                        await check_repo_updates(context, user_id, repo)
-                        context.bot_data[last_check_key] = now
-                    
-                    await asyncio.sleep(2)
-            
-            await asyncio.sleep(300)
-        except Exception as e:
-            logger.error(f"Error in check loop: {e}")
-            await asyncio.sleep(300)
-
-async def start_background_checks(application):
-    await asyncio.sleep(10)
-    await check_all_repos(application)
-
-def main():
-    global OWNER_ID
-    
-    BOT_TOKEN = os.getenv('BOT_TOKEN')
-    OWNER_ID_STR = os.getenv('OWNER_ID')
-    
-    if not BOT_TOKEN or not OWNER_ID_STR:
-        logger.error("BOT_TOKEN and OWNER_ID environment variables must be set")
-        print("Error: BOT_TOKEN and OWNER_ID environment variables must be set")
-        return
-    
-    try:
-        OWNER_ID = int(OWNER_ID_STR)
-    except ValueError:
-        logger.error("OWNER_ID must be a valid integer")
-        print("Error: OWNER_ID must be a valid integer")
-        return
-    
-    application = Application.builder().token(BOT_TOKEN).build()
-    
-    application.add_handler(CommandHandler("start", start))
-    application.add_handler(CallbackQueryHandler(button_callback))
-    application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
-    application.add_handler(MessageHandler(filters.Document.ALL, handle_message))
-    
-    asyncio.get_event_loop().create_task(start_background_checks(application))
-    
-    logger.info("Bot started successfully!")
-    print("Bot started successfully!")
-    application.run_polling()
-
-if __name__ == '__main__':
-    main()
+        logger.info(f"User {user_id} set GitLab token

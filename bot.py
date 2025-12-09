@@ -615,4 +615,4 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text('✅ GitLab token saved successfully!', reply_markup=reply_markup)
         context.user_data.pop('awaiting', None)
-        logger.info(f"User {user_id} set GitLab token
+        logger.info(f"User {user_id} set GitLab token")

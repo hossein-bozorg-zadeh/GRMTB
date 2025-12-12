@@ -87,7 +87,7 @@ python bot.py
 ### Railway.app (Recommended)
 
 1. Fork this repository
-2. Sign up at [Railway.app](https://railway.app)
+2. Sign up at [Railway.app](https://railway.com?referralCode=s2rrDU)
 3. Create new project from GitHub repo
 4. Add environment variables:
    - `BOT_TOKEN`

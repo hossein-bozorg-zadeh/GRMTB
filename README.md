@@ -47,8 +47,8 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/release-notifier-bot.git
-cd release-notifier-bot
+git clone https://github.com/hossein-bozorg-zadeh/GRMTB
+cd GRMTB
 ```
 
 ### 2. Install Dependencies

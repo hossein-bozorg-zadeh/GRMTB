@@ -1,167 +1,282 @@
-# GitHub Release Monitor Telegram Bot
+# 🔔 GitHub/GitLab Release Notifier Bot
 
-A Python-powered Telegram bot that automatically monitors GitHub repositories for new releases and notifies subscribed users in real-time. The bot supports multi-user subscriptions, admin controls, and scheduled background checks using APScheduler.
+A powerful Telegram bot that monitors GitHub and GitLab repositories for new releases and sends instant notifications with download options.
 
----
-
-## 📖 Table of Contents
-
-- [Overview](#overview)
-- [Features](#features)
-- [Usage](#usage)
-- [Owner Panel](#owner-panel)
-- [Installation](#installation)
-- [Configuration](#configuration)
-- [Data Persistence](#data-persistence)
-- [Logging](#logging)
-- [File Structure](#file-structure)
-- [License](#license)
-
----
-
-## 🧩 Overview
-
-This bot lets Telegram users track GitHub repositories and receive automatic updates whenever a new release is published. It can handle multiple repositories per user and runs periodic background checks to detect changes using the official GitHub API. The bot uses a modern inline keyboard interface for all interactions.
-
----
+[![Telegram Bot](https://img.shields.io/badge/Telegram-Bot-blue?logo=telegram)](https://t.me/gitchekerbot)
+[![Python](https://img.shields.io/badge/Python-3.8+-blue?logo=python)](https://www.python.org/)
+[![License](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
 
 ## ✨ Features
 
-- **Add & Remove Repositories**: Easily add and remove repositories from your watch list.
-- **Interactive Menu**: All actions are handled through an intuitive inline keyboard menu.
-- **Custom Check Intervals**: Set a custom check interval for each repository.
-- **Manual & Scheduled Checks**: Trigger a manual check for all your repositories at any time, or rely on the background scheduler.
-- **GitHub Token Support**: Add your GitHub personal access token to get higher API rate limits and access private repositories.
-- **Owner-Only Admin Panel**: A secure owner panel to manage users and the bot's settings.
-- **User Management**: Ban, unban, and manage special users who can use the bot in private mode.
-- **Broadcast System**: Send a message to all users of the bot.
-- **Public/Private Mode**: Control who can use the bot.
-- **Automatic Backups**: The bot automatically sends a backup of the data and log files to the owner every 24 hours.
-- **Data & Log Downloads**: Download the `bot_data.json` and `logs.json` files directly from the owner panel.
+### 🚀 Core Features
+- **Multi-Platform Support**: Monitor both GitHub 🤖 and GitLab 🦊 repositories
+- **Real-time Notifications**: Get instant alerts when new releases are published
+- **Download Integration**: Download release assets directly through Telegram (files < 50MB)
+- **Customizable Intervals**: Set check intervals per repository (6h, 12h, 24h, 48h, 72h)
+- **Manual Check**: Force check all repositories on demand
 
----
+### 🔐 Security & Access Control
+- **Dual Token System**: Each user sets their own GitHub and GitLab tokens
+- **Channel Requirement**: Optional mandatory channel membership for bot access
+- **User Management**: Ban/unban users, special user privileges
+- **Public/Private Mode**: Toggle bot accessibility
 
-## 💬 Usage
+### 👑 Admin Features
+- **Admin Panel**: Comprehensive control panel for bot owners
+- **Channel Configuration**: Set required channel and log channel from bot
+- **Data Management**: Export/import bot data as JSON
+- **Log Access**: Download bot logs for monitoring
+- **Broadcast Messages**: Send update notifications to all users
+- **Automatic Backups**: Daily backups to configured log channel
 
-Start a conversation with the bot and use the inline keyboard to navigate through the options.
+### 📊 Advanced Features
+- **Repository Icons**: Visual distinction between GitHub 🤖 and GitLab 🦊 repos
+- **Persistent Storage**: All data saved and survives restarts
+- **User-Specific Settings**: Each user manages their own repositories and tokens
+- **Smart Notifications**: Only notifies on new releases, not duplicates
 
-| Button | Description |
-|----------|-------------|
-| ➕ Add Repository | Add a new GitHub repository to your watch list. |
-| 📋 My Repositories | View a list of all the repositories you are currently tracking. |
-| ➖ Delete Repository | Remove a repository from your watch list. |
-| ⏰ Set Check Interval | Set a custom check interval for a repository. |
-| 🔍 Check All My Repos Now | Manually trigger a release check for all your repositories. |
-| 🔑 Set GitHub Token | Add or update your GitHub personal access token. |
+## 📋 Prerequisites
 
----
+- Python 3.8 or higher
+- Telegram Bot Token (from [@BotFather](https://t.me/BotFather))
+- GitHub Personal Access Token (optional, per user)
+- GitLab Personal Access Token (optional, per user)
 
-## 👑 Owner Panel
+## 🚀 Quick Start
 
-The owner panel is only accessible to the `OWNER_ID` configured in the `telegram_bot.py` file.
+### 1. Clone the Repository
 
-| Button | Description |
-|----------|-------------|
-| Mode: Public/Private | Toggle the bot's public/private mode. |
-| 📢 Broadcast Message | Send a message to all users. |
-| 👥 Manage Users | Ban, unban, and manage special users. |
-| 💾 Download Data | Download a copy of the `bot_data.json` file. |
-| 📋 Download Logs | Download a copy of the `logs.json` file. |
+```bash
+git clone https://github.com/yourusername/release-notifier-bot.git
+cd release-notifier-bot
+```
 
----
+### 2. Install Dependencies
 
-## ⚙️ Installation
+```bash
+pip install -r requirements.txt
+```
 
-1. **Clone the repository:**
+### 3. Set Environment Variables
 
-   ```bash
-   git clone https://github.com/hossein-bozorg-zadeh/GRMTB.git
-   cd GRMTB
-   ```
+Create a `.env` file or set environment variables:
 
-2. **Create a virtual environment (optional but recommended):**
+```bash
+export BOT_TOKEN="your_telegram_bot_token"
+export OWNER_ID="your_telegram_user_id"
+```
 
-   ```bash
-   python3 -m venv venv
-   source venv/bin/activate  # Linux/macOS
-   venv\Scripts\activate     # Windows
-   ```
+**Get Your Bot Token:**
+1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
+2. Send `/newbot` and follow the instructions
+3. Copy the token provided
 
-3. **Install dependencies:**
+**Get Your User ID:**
+1. Open Telegram and search for [@userinfobot](https://t.me/userinfobot)
+2. Send `/start`
+3. Copy your user ID
 
-   ```bash
-   pip install -r requirements.txt
-   ```
+### 4. Run the Bot
 
-4. **Configure the bot:**
+```bash
+python bot.py
+```
 
-    Open `telegram_bot.py` and set your `BOT_TOKEN` and `OWNER_ID` at the top of the file.
+## 🌐 Deploy to Free Hosting
 
-5. **Run the bot:**
+### Railway.app (Recommended)
 
-   ```bash
-   python telegram_bot.py
-   ```
+1. Fork this repository
+2. Sign up at [Railway.app](https://railway.app)
+3. Create new project from GitHub repo
+4. Add environment variables:
+   - `BOT_TOKEN`
+   - `OWNER_ID`
+5. Deploy! ✨
 
----
+### Render.com
+
+1. Fork this repository
+2. Sign up at [Render.com](https://render.com)
+3. Create new Web Service
+4. Connect your GitHub repo
+5. Set environment variables
+6. Deploy! ✨
+
+### Other Options
+- **Heroku**: Use `Procfile` included
+- **PythonAnywhere**: Upload and run
+- **Fly.io**: Use flyctl CLI
+- **VPS**: Any Linux server with Python
+
+## 📱 How to Use
+
+### Initial Setup
+
+1. Start the bot: `/start`
+2. Set your API tokens:
+   - Click **🔑 Set API Tokens**
+   - Choose **🤖 GitHub** or **🦊 GitLab**
+   - Send your personal access token
+
+**Get GitHub Token:**
+- Visit: https://github.com/settings/tokens
+- Generate new token (classic)
+- Select `public_repo` scope
+- Copy and send to bot
+
+**Get GitLab Token:**
+- Visit: https://gitlab.com/-/user_settings/personal_access_tokens
+- Create new token
+- Select `read_api` scope
+- Copy and send to bot
+
+### Adding Repositories
+
+1. Click **➕ Add Repo**
+2. Select platform (GitHub 🤖 or GitLab 🦊)
+3. Send repository in format: `owner/repo`
+   - Example: `torvalds/linux`
+   - Example: `gitlab-org/gitlab`
+
+### Managing Repositories
+
+- **📋 My Repos**: View all tracked repositories
+- **⏱ Set Check Interval**: Change how often to check each repo
+- **🗑 Delete Repo**: Remove a repository from tracking
+- **🔄 Check Now**: Manually check all repos immediately
+
+### Downloading Releases
+
+When a new release is detected:
+1. You'll receive a notification with release details
+2. If files are available, click the download button
+3. Files under 50MB are sent directly via Telegram
+4. Larger files show a direct download link
+
+## 👑 Admin Features
+
+Access the admin panel by clicking **👑 Admin Panel** (owner only).
+
+### Bot Configuration
+- **🔄 Toggle Bot Status**: Switch between Public/Private mode
+- **📢 Set Required Channel**: Users must join to use bot
+- **📊 Set Log Channel**: Receive daily backups automatically
+
+### User Management
+- **➕ Add Special User**: Grant access when bot is private
+- **🚫 Ban User**: Block user from bot
+- **✅ Unban User**: Restore user access
+- **📋 List Users**: View all bot users
+
+### Data Management
+- **💾 Download Data**: Export all bot data as JSON
+- **📋 Download Logs**: Download bot activity logs
+- **📥 Import Data**: Restore data from backup
+- **📣 Send Update Message**: Broadcast to all users
+
+### Automatic Backups
+
+If you set a log channel:
+- Bot data is automatically backed up every 24 hours
+- Log files are sent to the channel
+- Keeps your data safe without manual intervention
+
+## 📁 Project Structure
+
+```
+release-notifier-bot/
+├── bot.py                 # Main bot code
+├── requirements.txt       # Python dependencies
+├── Procfile              # For Railway/Heroku deployment
+├── railway.json          # Railway configuration
+├── runtime.txt           # Python version specification
+├── bot_data.json         # Data storage (auto-created)
+├── bot.log              # Log file (auto-created)
+├── README.md            # This file
+└── .gitignore           # Git ignore rules
+```
 
 ## 🔧 Configuration
 
-The bot is configured by setting the `BOT_TOKEN` and `OWNER_ID` variables directly in the `telegram_bot.py` script.
+### Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `BOT_TOKEN` | Yes | Telegram bot token from BotFather |
+| `OWNER_ID` | Yes | Telegram user ID of bot owner |
+
+### Bot Settings (Configurable in Bot)
+
+| Setting | Default | Description |
+|---------|---------|-------------|
+| Required Channel | None | Channel users must join |
+| Log Channel | None | Channel for daily backups |
+| Bot Mode | Public | Public or Private access |
+| Check Interval | 24h | Default check interval for new repos |
+
+## 📊 Data Storage
+
+All data is stored in `bot_data.json`:
+- User information
+- Repository lists
+- API tokens (stored locally)
+- Check intervals
+- Last release information
+- Bot settings
+
+**Backup regularly!** Use the admin panel to download data exports.
+
+## 🛠️ Troubleshooting
+
+### Bot Not Responding
+- Check if `BOT_TOKEN` and `OWNER_ID` are set correctly
+- Verify bot is running: look for "Bot started successfully!" in logs
+- Ensure you've started a chat with the bot in Telegram
+
+### No Notifications Received
+- Verify you've set the correct API token (GitHub or GitLab)
+- Check if repository has releases
+- Ensure check interval has passed
+- Use "🔄 Check Now" to manually trigger
+
+### Channel Membership Issues
+- Make sure bot is administrator in the required channel
+- Verify channel username is correct (include `@`)
+- Click "✅ Check Membership" after joining
+
+### API Rate Limits
+- GitHub: 5000 requests/hour with token
+- GitLab: Varies by token type
+- Use longer check intervals to avoid limits
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit a Pull Request.
+
+1. Fork the repository
+2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
+3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
+4. Push to the branch (`git push origin feature/AmazingFeature`)
+5. Open a Pull Request
+
+## 📄 License
+
+This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
+
+## 🙏 Acknowledgments
+
+- Built with [python-telegram-bot](https://github.com/python-telegram-bot/python-telegram-bot)
+- Uses GitHub API and GitLab API
+- Inspired by the need for instant release notifications
+
+## 🔗 Links
+
+- **GitHub Repository**: https://github.com/hossein-bozorg-zadeh/GRMTB
+- **Bot Demo**: [@gitchekerbot](https://t.me/gitchekerbot)
 
 ---
 
-## 💾 Logging
+Made with ❤️ by AI
 
-All bot activities, including errors and new release notifications, are logged to a `logs.json` file. This file is created automatically in the same directory as the script.
-
----
-
-## 💾 Data Persistence
-
-The bot stores all user data, including tracked repositories and settings, in a `bot_data.json` file.
-
-**This file is created automatically** in the same directory as the script when the bot is first run. The script requires write permissions in its directory to create and update this file.
-
-The data structure is as follows:
-
-```json
-{
-    "settings": {
-        "is_public": false
-    },
-    "users": {
-        "123456789": {
-            "repos": {
-                "owner/repo": {
-                    "url": "https://github.com/owner/repo",
-                    "interval_hours": 24,
-                    "last_release_id": 12345678
-                }
-            },
-            "github_token": "your_github_token"
-        }
-    },
-    "special_users": [],
-    "banned_users": []
-}
-```
-
----
-
-## 🗂️ File Structure
-
-```
-.
-├── telegram_bot.py        # Main bot source code
-├── bot_data.json          # Persistent user and repository data (created on first run)
-├── logs.json              # Log file for all bot activities
-├── requirements.txt       # Dependencies
-└── README.md              # This file
-```
-
----
-
-## 📜 License
-
-This project is licensed under the MIT License. You are free to modify, distribute, and use it for both personal and commercial purposes.
+**Star ⭐ this repository if you find it useful!**

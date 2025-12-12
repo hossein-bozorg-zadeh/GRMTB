@@ -410,6 +410,42 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await query.edit_message_text(f'✅ Checked {checked} repositories.', reply_markup=reply_markup)
         logger.info(f"User {user_id} manually checked {checked} repos")
     
+    elif query.data.startswith('asset_page_'):
+        parts = query.data.replace('asset_page_', '').rsplit('_', 1)
+        user_repo = parts[0]
+        page = int(parts[1])
+        
+        user_id_check = user_repo.split('_')[0]
+        if user_id_check != user_id:
+            await query.answer("This is not your download.")
+            return
+        
+        repo = '_'.join(user_repo.split('_')[1:])
+        asset_data = context.user_data.get(f'assets_{user_id}_{repo}')
+        
+        if not asset_data:
+            await query.answer("Session expired. Please check for updates again.")
+            return
+        
+        platform = asset_data['platform']
+        assets = asset_data['assets']
+        tag = asset_data.get('tag')
+        
+        keyboard = create_asset_buttons(user_id, platform, repo, assets, page, tag)
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        try:
+            await query.edit_message_reply_markup(reply_markup=reply_markup)
+            await query.answer(f"Page {page + 1}")
+        except Exception as e:
+            logger.error(f"Error changing page: {e}")
+            await query.answer("Error changing page")
+        return
+    
+    elif query.data == 'page_info':
+        await query.answer("Use ⬅️ Previous and ➡️ Next to navigate")
+        return
+    
     elif query.data.startswith('download_asset_'):
         parts = query.data.replace('download_asset_', '').split('_', 3)
         user_id_data = parts[0]
@@ -935,6 +971,7 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                         release_name = data.get('name') or release_tag
                         release_url = data.get('html_url')
                         published_at = data.get('published_at')
+                        body = data.get('body', '')
                         assets = data.get('assets', [])
                         
                         last_release = bot_data.last_releases.get(key)
@@ -947,26 +984,25 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                                 message = f"🎉 New GitHub Release for {repo}!\n\n"
                                 message += f"📦 {release_name}\n"
                                 message += f"🏷 Tag: {release_tag}\n"
-                                message += f"📅 Published: {published_at}\n"
+                                message += f"📅 Published: {published_at}\n\n"
+                                
+                                if body:
+                                    body_preview = body[:500] + "..." if len(body) > 500 else body
+                                    message += f"📝 Release Notes:\n{body_preview}\n\n"
+                                
                                 message += f"🔗 {release_url}\n"
                                 
                                 if assets:
                                     message += f"\n📥 {len(assets)} file(s) available"
                                     
-                                    keyboard = []
+                                    context.user_data[f'assets_{user_id}_{repo}'] = {
+                                        'assets': assets,
+                                        'platform': 'github',
+                                        'repo': repo,
+                                        'page': 0
+                                    }
                                     
-                                    for idx, asset in enumerate(assets[:10], 1):
-                                        asset_name = asset['name']
-                                        asset_size = asset['size'] / 1024 / 1024
-                                        button_text = f"📥 {asset_name} ({asset_size:.1f}MB)"
-                                        if len(button_text) > 60:
-                                            button_text = button_text[:57] + "..."
-                                        
-                                        keyboard.append([InlineKeyboardButton(
-                                            button_text,
-                                            callback_data=f"download_asset_{user_id}_github_{repo}_{asset['id']}"
-                                        )])
-                                    
+                                    keyboard = create_asset_buttons(user_id, 'github', repo, assets, 0)
                                     reply_markup = InlineKeyboardMarkup(keyboard)
                                     
                                     await context.bot.send_message(
@@ -1007,6 +1043,7 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                             release_tag = data.get('tag_name')
                             release_name = data.get('name') or release_tag
                             created_at = data.get('created_at')
+                            description = data.get('description', '')
                             assets = data.get('assets', {}).get('links', [])
                             
                             last_release = bot_data.last_releases.get(key)
@@ -1019,25 +1056,26 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                                     message = f"🎉 New GitLab Release for {repo}!\n\n"
                                     message += f"📦 {release_name}\n"
                                     message += f"🏷 Tag: {release_tag}\n"
-                                    message += f"📅 Created: {created_at}\n"
+                                    message += f"📅 Created: {created_at}\n\n"
+                                    
+                                    if description:
+                                        desc_preview = description[:500] + "..." if len(description) > 500 else description
+                                        message += f"📝 Release Notes:\n{desc_preview}\n\n"
+                                    
                                     message += f"🔗 https://gitlab.com/{repo}/-/releases/{release_tag}\n"
                                     
                                     if assets:
                                         message += f"\n📥 {len(assets)} file(s) available"
                                         
-                                        keyboard = []
+                                        context.user_data[f'assets_{user_id}_{repo}'] = {
+                                            'assets': assets,
+                                            'platform': 'gitlab',
+                                            'repo': repo,
+                                            'tag': release_tag,
+                                            'page': 0
+                                        }
                                         
-                                        for idx, asset in enumerate(assets[:10], 1):
-                                            asset_name = asset.get('name', 'Download')
-                                            button_text = f"📥 {asset_name}"
-                                            if len(button_text) > 60:
-                                                button_text = button_text[:57] + "..."
-                                            
-                                            keyboard.append([InlineKeyboardButton(
-                                                button_text,
-                                                callback_data=f"download_asset_{user_id}_gitlab_{repo}_{release_tag}"
-                                            )])
-                                        
+                                        keyboard = create_asset_buttons(user_id, 'gitlab', repo, assets, 0, release_tag)
                                         reply_markup = InlineKeyboardMarkup(keyboard)
                                         
                                         await context.bot.send_message(
@@ -1056,6 +1094,52 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                         logger.warning(f"GitLab API returned status {response.status} for {repo}")
         except Exception as e:
             logger.error(f"Error checking GitLab repo {repo} for user {user_id}: {e}")
+
+def create_asset_buttons(user_id, platform, repo, assets, page, tag=None):
+    keyboard = []
+    items_per_page = 10
+    start_idx = page * items_per_page
+    end_idx = start_idx + items_per_page
+    page_assets = assets[start_idx:end_idx]
+    
+    for asset in page_assets:
+        if platform == 'github':
+            asset_name = asset['name']
+            asset_size = asset['size'] / 1024 / 1024
+            button_text = f"📥 {asset_name} ({asset_size:.1f}MB)"
+            if len(button_text) > 60:
+                button_text = button_text[:57] + "..."
+            
+            keyboard.append([InlineKeyboardButton(
+                button_text,
+                callback_data=f"download_asset_{user_id}_github_{repo}_{asset['id']}"
+            )])
+        else:
+            asset_name = asset.get('name', 'Download')
+            button_text = f"📥 {asset_name}"
+            if len(button_text) > 60:
+                button_text = button_text[:57] + "..."
+            
+            keyboard.append([InlineKeyboardButton(
+                button_text,
+                callback_data=f"download_asset_{user_id}_gitlab_{repo}_{tag}"
+            )])
+    
+    nav_buttons = []
+    if page > 0:
+        nav_buttons.append(InlineKeyboardButton("⬅️ Previous", callback_data=f"asset_page_{user_id}_{repo}_{page-1}"))
+    
+    total_pages = (len(assets) + items_per_page - 1) // items_per_page
+    if page < total_pages - 1:
+        nav_buttons.append(InlineKeyboardButton("➡️ Next", callback_data=f"asset_page_{user_id}_{repo}_{page+1}"))
+    
+    if nav_buttons:
+        keyboard.append(nav_buttons)
+    
+    if total_pages > 1:
+        keyboard.append([InlineKeyboardButton(f"📄 Page {page + 1}/{total_pages}", callback_data="page_info")])
+    
+    return keyboard
 
 async def check_all_repos(context: ContextTypes.DEFAULT_TYPE):
     while True:

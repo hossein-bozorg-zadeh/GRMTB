@@ -160,10 +160,13 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not await check_channel_membership(update, context):
         channel_link = bot_data.required_channel.replace('@', '')
-        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{channel_link}")]]
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}")],
+            [InlineKeyboardButton("✅ Check Membership", callback_data='check_membership')]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "⚠️ You must join our channel to use this bot.\n\nClick the button below to join:",
+            "⚠️ You must join our channel to use this bot.\n\n1️⃣ Click 'Join Channel' below\n2️⃣ Join the channel\n3️⃣ Click 'Check Membership'",
             reply_markup=reply_markup
         )
         return
@@ -185,7 +188,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
     
     reply_markup = InlineKeyboardMarkup(keyboard)
-    await update.message.reply_text('🤖 GitHub/GitLab Release Notifier Bot v2.0\n\nSelect an option:', reply_markup=reply_markup)
+    await update.message.reply_text('🔔 GitHub/GitLab Release Notifier\n\nSelect an option:', reply_markup=reply_markup)
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -198,12 +201,41 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not await check_channel_membership(update, context):
         channel_link = bot_data.required_channel.replace('@', '')
-        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{channel_link}")]]
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}")],
+            [InlineKeyboardButton("✅ Check Membership", callback_data='check_membership')]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await query.edit_message_text(
-            "⚠️ You must join our channel to use this bot.\n\nClick the button below to join:",
+            "⚠️ You must join our channel to use this bot.\n\n1️⃣ Click 'Join Channel' below\n2️⃣ Join the channel\n3️⃣ Click 'Check Membership'",
             reply_markup=reply_markup
         )
+        return
+    
+    if query.data == 'check_membership':
+        if await check_channel_membership(update, context):
+            keyboard = [
+                [InlineKeyboardButton("📋 My Repos", callback_data='my_repos')],
+                [InlineKeyboardButton("➕ Add Repo", callback_data='add_repo')],
+                [InlineKeyboardButton("🔑 Set API Tokens", callback_data='set_tokens')],
+                [InlineKeyboardButton("⏱ Set Check Interval", callback_data='set_interval')],
+                [InlineKeyboardButton("🔄 Check Now", callback_data='check_now')]
+            ]
+            if is_owner(int(user_id)):
+                keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text('🔔 GitHub/GitLab Release Notifier\n\n✅ Membership verified! Select an option:', reply_markup=reply_markup)
+        else:
+            channel_link = bot_data.required_channel.replace('@', '')
+            keyboard = [
+                [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}")],
+                [InlineKeyboardButton("✅ Check Membership", callback_data='check_membership')]
+            ]
+            reply_markup = InlineKeyboardMarkup(keyboard)
+            await query.edit_message_text(
+                "❌ You haven't joined the channel yet.\n\n1️⃣ Click 'Join Channel' below\n2️⃣ Join the channel\n3️⃣ Click 'Check Membership'",
+                reply_markup=reply_markup
+            )
         return
     
     if query.data == 'main_menu':
@@ -217,7 +249,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         if is_owner(int(user_id)):
             keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text('🤖 GitHub/GitLab Release Notifier Bot v2.0\n\nSelect an option:', reply_markup=reply_markup)
+        await query.edit_message_text('🔔 GitHub/GitLab Release Notifier\n\nSelect an option:', reply_markup=reply_markup)
     
     elif query.data == 'my_repos':
         user_repos = bot_data.repos.get(user_id, [])
@@ -228,7 +260,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             for idx, repo in enumerate(user_repos, 1):
                 interval = bot_data.check_intervals.get(f"{user_id}_{repo}", 24)
                 repo_type = bot_data.repo_types.get(f"{user_id}_{repo}", 'github')
-                icon = "🐙" if repo_type == 'github' else "🦊"
+                icon = "🤖" if repo_type == 'github' else "🦊"
                 text += f"{idx}. {icon} {repo} (Check: {interval}h)\n"
         
         keyboard = [[InlineKeyboardButton("🔙 Back", callback_data='main_menu')]]
@@ -239,7 +271,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'add_repo':
         keyboard = [
-            [InlineKeyboardButton("🐙 GitHub Repository", callback_data='add_github')],
+            [InlineKeyboardButton("🤖 GitHub Repository", callback_data='add_github')],
             [InlineKeyboardButton("🦊 GitLab Repository", callback_data='add_gitlab')],
             [InlineKeyboardButton("❌ Cancel", callback_data='main_menu')]
         ]
@@ -260,7 +292,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     elif query.data == 'set_tokens':
         keyboard = [
-            [InlineKeyboardButton("🐙 Set GitHub Token", callback_data='set_github_token')],
+            [InlineKeyboardButton("🤖 Set GitHub Token", callback_data='set_github_token')],
             [InlineKeyboardButton("🦊 Set GitLab Token", callback_data='set_gitlab_token')],
             [InlineKeyboardButton("🔙 Back", callback_data='main_menu')]
         ]
@@ -277,7 +309,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data['awaiting'] = 'gitlab_token'
         keyboard = [[InlineKeyboardButton("❌ Cancel", callback_data='set_tokens')]]
         reply_markup = InlineKeyboardMarkup(keyboard)
-        await query.edit_message_text('🔑 Set GitLab Token\n\nSend your GitLab personal access token.\n\nGet one from: https://gitlab.com/-/profile/personal_access_tokens', reply_markup=reply_markup)
+        await query.edit_message_text('🔑 Set GitLab Token\n\nSend your GitLab personal access token.\n\nGet one from: https://gitlab.com/-/user_settings/personal_access_tokens', reply_markup=reply_markup)
     
     elif query.data == 'set_interval':
         user_repos = bot_data.repos.get(user_id, [])
@@ -292,7 +324,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         for idx, repo in enumerate(user_repos, 1):
             repo_type = bot_data.repo_types.get(f"{user_id}_{repo}", 'github')
-            icon = "🐙" if repo_type == 'github' else "🦊"
+            icon = "🤖" if repo_type == 'github' else "🦊"
             text += f"{idx}. {icon} {repo}\n"
             keyboard.append([InlineKeyboardButton(f"{idx}. {icon} {repo}", callback_data=f'interval_select_{repo}')])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='main_menu')])
@@ -330,7 +362,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard = []
         for idx, repo in enumerate(user_repos, 1):
             repo_type = bot_data.repo_types.get(f"{user_id}_{repo}", 'github')
-            icon = "🐙" if repo_type == 'github' else "🦊"
+            icon = "🤖" if repo_type == 'github' else "🦊"
             text += f"{idx}. {icon} {repo}\n"
             keyboard.append([InlineKeyboardButton(f"🗑 {icon} {repo}", callback_data=f'delete_{repo}')])
         keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='my_repos')])
@@ -597,10 +629,13 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if not await check_channel_membership(update, context):
         channel_link = bot_data.required_channel.replace('@', '')
-        keyboard = [[InlineKeyboardButton("Join Channel", url=f"https://t.me/{channel_link}")]]
+        keyboard = [
+            [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}")],
+            [InlineKeyboardButton("✅ Check Membership", callback_data='check_membership')]
+        ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         await update.message.reply_text(
-            "⚠️ You must join our channel to use this bot.\n\nClick the button below to join:",
+            "⚠️ You must join our channel to use this bot.\n\n1️⃣ Click 'Join Channel' below\n2️⃣ Join the channel\n3️⃣ Click 'Check Membership'",
             reply_markup=reply_markup
         )
         return

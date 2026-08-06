@@ -10,13 +10,16 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 
 ### 🚀 Core Features
 - **Multi-Platform Support**: Monitor both GitHub 🤖 and GitLab 🦊 repositories
+- **Self-Hosted GitLab**: Track releases from your own GitLab instances
 - **Real-time Notifications**: Get instant alerts when new releases are published
+- **Missed Release Catch-Up**: If the bot is offline when releases are published, it notifies you about every release you missed (not just the newest one)
 - **Download Integration**: Download release assets directly through Telegram (files < 50MB)
 - **Customizable Intervals**: Set check intervals per repository (6h, 12h, 24h, 48h, 72h)
 - **Manual Check**: Force check all repositories on demand
 
 ### 🔐 Security & Access Control
 - **Dual Token System**: Each user sets their own GitHub and GitLab tokens
+- **Encrypted Tokens**: API tokens are encrypted at rest with Fernet (AES) before being stored
 - **Channel Requirement**: Optional mandatory channel membership for bot access
 - **User Management**: Ban/unban users, special user privileges
 - **Public/Private Mode**: Toggle bot accessibility
@@ -31,9 +34,10 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 
 ### 📊 Advanced Features
 - **Repository Icons**: Visual distinction between GitHub 🤖 and GitLab 🦊 repos
-- **Persistent Storage**: All data saved and survives restarts
+- **Persistent Storage**: All data stored in a SQLite database (`bot_data.db`)
 - **User-Specific Settings**: Each user manages their own repositories and tokens
 - **Smart Notifications**: Only notifies on new releases, not duplicates
+- **Persistent Check History**: Last-check timestamps survive restarts (no re-check storm after redeploy)
 
 ## 📋 Prerequisites
 
@@ -66,6 +70,21 @@ export BOT_TOKEN="your_telegram_bot_token"
 export OWNER_ID="your_telegram_user_id"
 ```
 
+**Optional environment variables:**
+
+```bash
+export TOKEN_ENCRYPTION_KEY="your_fernet_key"  # recommended: use a fixed key across restarts
+export DB_FILE="/path/to/volume/bot_data.db"   # default: bot_data.db in the working directory
+```
+
+If `TOKEN_ENCRYPTION_KEY` is not set, the bot generates a key on first run and stores it inside the database. For real security and portable backups, set this variable to a fixed Fernet key — generate one with:
+
+```bash
+python3 -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+```
+
+> **Warning**: Encrypted tokens can only be decrypted with the key that encrypted them. If you restore a data backup on a new deployment, use the same `TOKEN_ENCRYPTION_KEY` so tokens remain usable.
+
 **Get Your Bot Token:**
 1. Open Telegram and search for [@BotFather](https://t.me/BotFather)
 2. Send `/newbot` and follow the instructions
@@ -92,7 +111,9 @@ python bot.py
 4. Add environment variables:
    - `BOT_TOKEN`
    - `OWNER_ID`
-5. Deploy! ✨
+   - `TOKEN_ENCRYPTION_KEY` (recommended)
+5. **Add a persistent volume** (Settings → Volumes → Mount `/data`) and set `DB_FILE=/data/bot_data.db` so your data survives redeploys
+6. Deploy! ✨
 
 ### Render.com
 
@@ -139,6 +160,15 @@ python bot.py
    - Example: `torvalds/linux`
    - Example: `gitlab-org/gitlab`
 
+#### Self-Hosted GitLab Instances
+
+After sending a GitLab repository, the bot asks for the GitLab instance URL:
+
+- Send your instance URL, e.g. `https://gitlab.example.com`
+- Or send `skip` to use the default `https://gitlab.com`
+
+Self-hosted repos are marked as `(self-hosted)` in your repository list.
+
 ### Managing Repositories
 
 - **📋 My Repos**: View all tracked repositories
@@ -153,6 +183,8 @@ When a new release is detected:
 2. If files are available, click the download button
 3. Files under 50MB are sent directly via Telegram
 4. Larger files show a direct download link
+
+If several releases were published while the bot was offline, you receive a separate notification for **each** release (oldest first).
 
 ## 👑 Admin Features
 
@@ -191,7 +223,7 @@ release-notifier-bot/
 ├── Procfile              # For Railway/Heroku deployment
 ├── railway.json          # Railway configuration
 ├── runtime.txt           # Python version specification
-├── bot_data.json         # Data storage (auto-created)
+├── bot_data.db           # SQLite data storage (auto-created)
 ├── bot.log              # Log file (auto-created)
 ├── README.md            # This file
 └── .gitignore           # Git ignore rules
@@ -205,6 +237,8 @@ release-notifier-bot/
 |----------|----------|-------------|
 | `BOT_TOKEN` | Yes | Telegram bot token from BotFather |
 | `OWNER_ID` | Yes | Telegram user ID of bot owner |
+| `TOKEN_ENCRYPTION_KEY` | No | Fernet key used to encrypt API tokens (recommended for portability) |
+| `DB_FILE` | No | Path to the SQLite database file (default: `bot_data.db`) |
 
 ### Bot Settings (Configurable in Bot)
 
@@ -217,15 +251,18 @@ release-notifier-bot/
 
 ## 📊 Data Storage
 
-All data is stored in `bot_data.json`:
+All data is stored in a **SQLite database** (`bot_data.db`, configurable via `DB_FILE`):
 - User information
 - Repository lists
-- API tokens (stored locally)
+- API tokens (encrypted with Fernet)
 - Check intervals
 - Last release information
+- Last-check timestamps
 - Bot settings
 
-**Backup regularly!** Use the admin panel to download data exports.
+**Backup regularly!** Use the admin panel to download data exports. Note that exported tokens are encrypted — use the same `TOKEN_ENCRYPTION_KEY` when restoring on another deployment.
+
+> **Railway**: add a persistent volume and set `DB_FILE` to a path inside it so the database survives redeploys.
 
 ## 🛠️ Troubleshooting
 

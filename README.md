@@ -38,6 +38,7 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 - **User-Specific Settings**: Each user manages their own repositories and tokens
 - **Smart Notifications**: Only notifies on new releases, not duplicates
 - **Persistent Check History**: Last-check timestamps survive restarts (no re-check storm after redeploy)
+- **Paid Features**: Monetize premium features with Telegram Stars and/or TON (via CryptoBot)
 
 ## 📋 Prerequisites
 
@@ -75,7 +76,12 @@ export OWNER_ID="your_telegram_user_id"
 ```bash
 export TOKEN_ENCRYPTION_KEY="your_fernet_key"  # recommended: use a fixed key across restarts
 export DB_FILE="/path/to/volume/bot_data.db"   # default: bot_data.db in the working directory
+export CRYPTO_BOT_TOKEN="your_crypto_bot_api_token"  # enables TON payments via CryptoBot
+export PUBLIC_URL="https://your-public-url"          # required for CryptoBot webhook callbacks
+export WEBHOOK_PORT="8080"                            # port for the CryptoBot webhook server (default 8080)
 ```
+
+The webhook server only starts when `CRYPTO_BOT_TOKEN` is set. `PUBLIC_URL` must be a public HTTPS URL reachable by CryptoBot (e.g. `https://your-railway-url.up.railway.app`); the webhook endpoint is `POST {PUBLIC_URL}/cb_webhook`.
 
 If `TOKEN_ENCRYPTION_KEY` is not set, the bot generates a key on first run and stores it inside the database. For real security and portable backups, set this variable to a fixed Fernet key — generate one with:
 
@@ -113,7 +119,8 @@ python bot.py
    - `OWNER_ID`
    - `TOKEN_ENCRYPTION_KEY` (recommended)
 5. **Add a persistent volume** (Settings → Volumes → Mount `/data`) and set `DB_FILE=/data/bot_data.db` so your data survives redeploys
-6. Deploy! ✨
+6. *(Optional for TON payments)* Add `CRYPTO_BOT_TOKEN`, then **generate a domain** (Settings → Networking) and set `PUBLIC_URL=https://<your-app>.up.railway.app`
+7. Deploy! ✨
 
 ### Render.com
 
@@ -223,6 +230,47 @@ If you set a log channel:
 - Log files are sent to the channel
 - Keeps your data safe without manual intervention
 
+## 💰 Paid Features (Telegram Stars + TON)
+
+The bot supports selling premium features with two payment methods:
+
+### 1. Telegram Stars
+
+Telegram's native in-app currency. To enable:
+
+1. Send `/mybots` to [@BotFather](https://t.me/BotFather), select your bot
+2. Choose **Payments** and create/attach a payment provider (Telegram Stars)
+3. No additional environment variables needed — stars use the bot token directly
+
+Users tap the `✨ Buy Features` button and pay with Stars inline. Purchases are confirmed automatically via Telegram's pre-checkout flow.
+
+### 2. TON (via CryptoBot)
+
+Users pay with TON coins through [CryptoBot](https://t.me/CryptoBot). To enable:
+
+1. Open [@CryptoBot](https://t.me/CryptoBot) and get your API token (Settings → API)
+2. Set `CRYPTO_BOT_TOKEN`
+3. Set `PUBLIC_URL` to a public HTTPS URL that CryptoBot can reach (Railway generates one for you under Settings → Networking → Generate Domain)
+4. The webhook endpoint is `POST {PUBLIC_URL}/cb_webhook`; the bot listens on `WEBHOOK_PORT` (default `8080`)
+
+Users pay via a CryptoBot invoice link. The bot confirms payment through the webhook and also offers a "I've paid — Check" button that polls CryptoBot as a fallback.
+
+> **Note**: For the CryptoBot webhook to work, your deployment must expose a public HTTPS URL on `WEBHOOK_PORT`. The "I've paid — Check" button still works without a public URL.
+
+### Admin: Managing Paid Features
+
+The owner (and special users) can open **💰 Paid Features** from the admin panel to:
+- Add a feature (key, title, description, price in Stars, price in TON)
+- Toggle features on/off (disabled features aren't shown in the store)
+- Delete features
+- View purchase history (`feature_purchases`)
+
+### Unlocking Logic
+
+- Purchases are one-time unlocks keyed by `(user_id, feature_key)` — no expiry or subscription
+- The owner and special users bypass the paywall automatically
+- Purchase records are included in data export/import, so unlocks survive backup restore
+
 ## 📁 Project Structure
 
 ```
@@ -248,6 +296,9 @@ release-notifier-bot/
 | `OWNER_ID` | Yes | Telegram user ID of bot owner |
 | `TOKEN_ENCRYPTION_KEY` | No | Fernet key used to encrypt API tokens (recommended for portability) |
 | `DB_FILE` | No | Path to the SQLite database file (default: `bot_data.db`) |
+| `CRYPTO_BOT_TOKEN` | No | CryptoBot API token; enables TON payments and starts the webhook server |
+| `PUBLIC_URL` | No | Public HTTPS URL used as the CryptoBot callback URL |
+| `WEBHOOK_PORT` | No | Port for the CryptoBot webhook server (default: `8080`) |
 
 ### Bot Settings (Configurable in Bot)
 

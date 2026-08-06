@@ -7,9 +7,10 @@ from datetime import datetime, timedelta
 from io import BytesIO
 
 import aiohttp
+from aiohttp import web
 from cryptography.fernet import Fernet
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
-from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes, MessageHandler, PreCheckoutQueryHandler, filters
 
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
@@ -77,6 +78,28 @@ class BotData:
             CREATE TABLE IF NOT EXISTS settings (
                 key TEXT PRIMARY KEY,
                 value TEXT
+            );
+            CREATE TABLE IF NOT EXISTS paid_features (
+                feature_key TEXT PRIMARY KEY,
+                title TEXT,
+                description TEXT,
+                stars_price INTEGER NOT NULL DEFAULT 0,
+                ton_price REAL NOT NULL DEFAULT 0,
+                enabled INTEGER NOT NULL DEFAULT 1
+            );
+            CREATE TABLE IF NOT EXISTS purchases (
+                user_id INTEGER,
+                feature_key TEXT,
+                paid_at TEXT,
+                method TEXT,
+                txn_id TEXT,
+                PRIMARY KEY (user_id, feature_key)
+            );
+            CREATE TABLE IF NOT EXISTS pending_crypto (
+                invoice_id TEXT PRIMARY KEY,
+                user_id INTEGER,
+                feature_key TEXT,
+                created_at TEXT
             );
         ''')
         self.conn.commit()
@@ -315,6 +338,85 @@ class BotData:
         members.add(int(user_id))
         self._set_setting('joined_members', json.dumps(sorted(members)))
 
+    def get_features(self):
+        features = {}
+        for row in self.conn.execute('SELECT * FROM paid_features'):
+            features[row['feature_key']] = {
+                'title': row['title'],
+                'description': row['description'],
+                'stars_price': row['stars_price'],
+                'ton_price': row['ton_price'],
+                'enabled': bool(row['enabled']),
+            }
+        return features
+
+    def get_feature(self, feature_key):
+        row = self.conn.execute('SELECT * FROM paid_features WHERE feature_key = ?', (feature_key,)).fetchone()
+        if not row:
+            return None
+        return {
+            'title': row['title'],
+            'description': row['description'],
+            'stars_price': row['stars_price'],
+            'ton_price': row['ton_price'],
+            'enabled': bool(row['enabled']),
+        }
+
+    def upsert_feature(self, feature_key, title, description, stars_price, ton_price, enabled=1):
+        self.conn.execute(
+            'INSERT INTO paid_features (feature_key, title, description, stars_price, ton_price, enabled) '
+            'VALUES (?, ?, ?, ?, ?, ?) '
+            'ON CONFLICT(feature_key) DO UPDATE SET title = excluded.title, description = excluded.description, '
+            'stars_price = excluded.stars_price, ton_price = excluded.ton_price, enabled = excluded.enabled',
+            (feature_key, title, description, int(stars_price or 0), float(ton_price or 0), 1 if enabled else 0)
+        )
+        self.conn.commit()
+
+    def remove_feature(self, feature_key):
+        self.conn.execute('DELETE FROM paid_features WHERE feature_key = ?', (feature_key,))
+        self.conn.execute('DELETE FROM purchases WHERE feature_key = ?', (feature_key,))
+        self.conn.execute('DELETE FROM pending_crypto WHERE feature_key = ?', (feature_key,))
+        self.conn.commit()
+
+    def has_purchased(self, user_id, feature_key):
+        row = self.conn.execute('SELECT 1 FROM purchases WHERE user_id = ? AND feature_key = ?', (int(user_id), feature_key)).fetchone()
+        return row is not None
+
+    def record_purchase(self, user_id, feature_key, method, txn_id):
+        self.conn.execute(
+            'INSERT OR IGNORE INTO purchases (user_id, feature_key, paid_at, method, txn_id) VALUES (?, ?, ?, ?, ?)',
+            (int(user_id), feature_key, datetime.now().isoformat(), method, txn_id)
+        )
+        self.conn.commit()
+
+    def get_purchases(self, user_id):
+        rows = self.conn.execute('SELECT feature_key, paid_at, method FROM purchases WHERE user_id = ? ORDER BY paid_at DESC', (int(user_id),)).fetchall()
+        return [dict(row) for row in rows]
+
+    def get_all_purchases(self):
+        rows = self.conn.execute('SELECT * FROM purchases ORDER BY paid_at DESC').fetchall()
+        return [dict(row) for row in rows]
+
+    def is_feature_unlocked(self, user_id, feature_key):
+        if is_owner(user_id) or int(user_id) in self.get_special_users():
+            return True
+        return self.has_purchased(user_id, feature_key)
+
+    def save_pending_crypto(self, invoice_id, user_id, feature_key):
+        self.conn.execute(
+            'INSERT OR REPLACE INTO pending_crypto (invoice_id, user_id, feature_key, created_at) VALUES (?, ?, ?, ?)',
+            (invoice_id, int(user_id), feature_key, datetime.now().isoformat())
+        )
+        self.conn.commit()
+
+    def get_pending_crypto(self, invoice_id):
+        row = self.conn.execute('SELECT * FROM pending_crypto WHERE invoice_id = ?', (invoice_id,)).fetchone()
+        return dict(row) if row else None
+
+    def remove_pending_crypto(self, invoice_id):
+        self.conn.execute('DELETE FROM pending_crypto WHERE invoice_id = ?', (invoice_id,))
+        self.conn.commit()
+
     def get_log_channel(self):
         return self._get_setting('log_channel')
 
@@ -361,11 +463,13 @@ class BotData:
             'required_channel_link': self.get_required_channel_link() or None,
             'joined_members': sorted(self.get_joined_members()),
             'log_channel': self.get_log_channel() or None,
+            'features': self.get_features(),
+            'purchases': self.get_all_purchases(),
             'export_date': datetime.now().isoformat()
         }, indent=2)
 
     def _clear_all(self):
-        for table in ['users', 'repos', 'user_tokens', 'check_intervals', 'last_releases', 'last_checks', 'gitlab_instances']:
+        for table in ['users', 'repos', 'user_tokens', 'check_intervals', 'last_releases', 'last_checks', 'gitlab_instances', 'paid_features', 'purchases', 'pending_crypto']:
             self.conn.execute(f'DELETE FROM {table}')
         self.conn.commit()
 
@@ -419,6 +523,22 @@ class BotData:
             else:
                 self.remove_log_channel()
 
+            for key, feat in (data.get('features') or {}).items():
+                self.upsert_feature(
+                    key, feat.get('title', key), feat.get('description', ''),
+                    feat.get('stars_price', 0), feat.get('ton_price', 0), feat.get('enabled', True)
+                )
+            for purchase in (data.get('purchases') or []):
+                try:
+                    self.conn.execute(
+                        'INSERT OR IGNORE INTO purchases (user_id, feature_key, paid_at, method, txn_id) VALUES (?, ?, ?, ?, ?)',
+                        (int(purchase['user_id']), purchase['feature_key'], purchase.get('paid_at', datetime.now().isoformat()),
+                         purchase.get('method', 'stars'), purchase.get('txn_id', ''))
+                    )
+                except Exception as e:
+                    logger.error(f"Skipping purchase row: {e}")
+            self.conn.commit()
+
             logger.info("Data imported successfully")
             return True
         except Exception as e:
@@ -458,6 +578,33 @@ def can_use_bot(user_id):
         return True
     return False
 
+def is_feature_unlocked(user_id, feature_key):
+    if is_owner(user_id) or int(user_id) in bot_data.get_special_users():
+        return True
+    return bot_data.has_purchased(user_id, feature_key)
+
+def feature_locked_keyboard(user_id, feature_key):
+    if is_feature_unlocked(user_id, feature_key):
+        return None
+    feature = bot_data.get_feature(feature_key)
+    if not feature:
+        return None
+    return InlineKeyboardMarkup([[
+        InlineKeyboardButton(f"🔒 Unlock {feature['title']}", callback_data=f'buy_feature|{feature_key}')
+    ]])
+
+def _finalize_payment(user_id, feature_key, method, txn_id, invoice_id=None):
+    feature = bot_data.get_feature(feature_key)
+    if not feature:
+        return False
+    if bot_data.has_purchased(user_id, feature_key):
+        return False
+    bot_data.record_purchase(user_id, feature_key, method, txn_id)
+    if invoice_id is not None:
+        bot_data.remove_pending_crypto(invoice_id)
+    logger.info(f"User {user_id} purchased feature '{feature_key}' via {method}")
+    return True
+
 async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     required_channel = bot_data.get_required_channel()
     if not required_channel:
@@ -492,7 +639,8 @@ def main_menu_keyboard(user_id):
         [InlineKeyboardButton("➕ Add Repo", callback_data='add_repo')],
         [InlineKeyboardButton("🔑 Set API Tokens", callback_data='set_tokens')],
         [InlineKeyboardButton("⏱ Set Check Interval", callback_data='set_interval')],
-        [InlineKeyboardButton("🔄 Check Now", callback_data='check_now')]
+        [InlineKeyboardButton("🔄 Check Now", callback_data='check_now')],
+        [InlineKeyboardButton("✨ Buy Features", callback_data='feature_store')]
     ]
     if is_owner(int(user_id)):
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
@@ -777,6 +925,7 @@ async def _callback_admin_panel(update, query, context, user_id, data):
         [InlineKeyboardButton("📢 Set Required Channel", callback_data='set_required_channel')],
         [InlineKeyboardButton("📊 Set Log Channel", callback_data='set_log_channel')],
         [InlineKeyboardButton("👥 Manage Users", callback_data='manage_users')],
+        [InlineKeyboardButton("💰 Paid Features", callback_data='paid_features')],
         [InlineKeyboardButton("📣 Send Update Message", callback_data='send_update')],
         [InlineKeyboardButton("💾 Download Data", callback_data='download_data')],
         [InlineKeyboardButton("📋 Download Logs", callback_data='download_logs')],
@@ -958,6 +1107,248 @@ async def _callback_send_update(update, query, context, user_id, data):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='admin_panel')]])
     )
 
+# ---------------------------------------------------------------- paid features
+
+async def _callback_feature_store(update, query, context, user_id, data):
+    features = bot_data.get_features()
+    enabled = {k: v for k, v in features.items() if v['enabled']}
+    if not enabled:
+        await query.edit_message_text(
+            '✨ Feature Store\n\nNo paid features available yet.',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='main_menu')]])
+        )
+        return
+
+    text = '✨ Feature Store\n\nUnlock premium features:\n\n'
+    keyboard = []
+    for i, (key, feat) in enumerate(enabled.items(), 1):
+        owned = is_feature_unlocked(int(user_id), key)
+        prices = []
+        if feat['stars_price']:
+            prices.append(f"{feat['stars_price']}⭐")
+        if feat['ton_price']:
+            prices.append(f"{feat['ton_price']} TON")
+        mark = "✅" if owned else "🔒"
+        text += f"{i}. {mark} {feat['title']} — {', '.join(prices)}\n"
+        label = f"{mark} {feat['title']}"
+        keyboard.append([InlineKeyboardButton(label[:60], callback_data=f'buy_feature|{key}')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='main_menu')])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def _callback_buy_feature(update, query, context, user_id, data):
+    key = data.split('|', 1)[1]
+    feat = bot_data.get_feature(key)
+    if not feat:
+        await query.answer("Feature not found.")
+        return
+
+    if is_feature_unlocked(int(user_id), key):
+        await query.edit_message_text(
+            f"✅ You already own: {feat['title']}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='feature_store')]])
+        )
+        return
+
+    text = f"🔒 {feat['title']}\n\n{feat['description'] or 'No description available.'}\n\n"
+    prices = []
+    if feat['stars_price']:
+        prices.append(f"⭐ {feat['stars_price']} Stars")
+    if feat['ton_price']:
+        prices.append(f"💎 {feat['ton_price']} TON")
+    text += "Price: " + " / ".join(prices)
+
+    keyboard = []
+    if feat['stars_price']:
+        keyboard.append([InlineKeyboardButton(f"⭐ Pay {feat['stars_price']} Stars", callback_data=f'pay_stars|{key}')])
+    if feat['ton_price']:
+        keyboard.append([InlineKeyboardButton(f"💎 Pay {feat['ton_price']} TON", callback_data=f'pay_ton|{key}')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='feature_store')])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def _callback_pay_stars(update, query, context, user_id, data):
+    key = data.split('|', 1)[1]
+    feat = bot_data.get_feature(key)
+    if not feat or not feat['enabled'] or not feat['stars_price']:
+        await query.answer("Feature not available.")
+        return
+    try:
+        await context.bot.send_invoice(
+            chat_id=int(user_id),
+            title=feat['title'][:64],
+            description=(feat['description'] or '')[:255],
+            payload=f"stars:{key}",
+            provider_token='',
+            currency='XTR',
+            prices=[LabeledPrice(label='⭐', amount=int(feat['stars_price']))],
+        )
+        await query.answer("Invoice sent!")
+    except Exception as e:
+        logger.error(f"send_invoice error for user {user_id}: {e}")
+        await query.edit_message_text(f"❌ Could not create the invoice.\n\nMake sure payments (Telegram Stars) are enabled in @BotFather.\n\nError: {e}")
+
+async def _callback_pay_ton(update, query, context, user_id, data):
+    key = data.split('|', 1)[1]
+    feat = bot_data.get_feature(key)
+    if not feat or not feat['enabled'] or not feat['ton_price']:
+        await query.answer("Feature not available.")
+        return
+
+    token = os.getenv('CRYPTO_BOT_TOKEN')
+    if not token:
+        await query.edit_message_text("❌ TON payments are not configured yet. Contact the owner.")
+        return
+
+    public_url = os.getenv('PUBLIC_URL', '').rstrip('/')
+    callback_url = f"{public_url}/cb_webhook" if public_url else None
+    payload_str = f"ton:{user_id}:{key}"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            body = {
+                'asset': 'TON',
+                'amount': str(feat['ton_price']),
+                'description': feat['title'][:255],
+                'payload': payload_str,
+            }
+            if callback_url:
+                body['callback_url'] = callback_url
+            async with session.post(
+                'https://pay.crypt.bot/api/createInvoice',
+                headers={'Crypto-Pay-API-Token': token},
+                json=body
+            ) as response:
+                data = await response.json()
+                if data.get('ok'):
+                    result = data['result']
+                    invoice_id = result['invoice_id']
+                    pay_url = result['pay_url']
+                    bot_data.save_pending_crypto(invoice_id, user_id, key)
+                    keyboard = [
+                        [InlineKeyboardButton(f"💎 Pay {feat['ton_price']} TON", url=pay_url)],
+                        [InlineKeyboardButton("✅ I've paid — Check", callback_data=f'crypto_check|{invoice_id}|{key}')],
+                        [InlineKeyboardButton("🔙 Back", callback_data='feature_store')]
+                    ]
+                    await query.edit_message_text(
+                        f"💎 Pay with TON\n\nFeature: {feat['title']}\nAmount: {feat['ton_price']} TON\n\n"
+                        f"1️⃣ Tap the pay button (opens @CryptoBot)\n2️⃣ Complete the payment\n3️⃣ Tap 'I've paid — Check'",
+                        reply_markup=InlineKeyboardMarkup(keyboard)
+                    )
+                else:
+                    error_msg = (data.get('error') or {}).get('message', 'unknown error')
+                    await query.edit_message_text(f"❌ Failed to create TON invoice: {error_msg}")
+    except Exception as e:
+        logger.error(f"CryptoBot createInvoice error for user {user_id}: {e}")
+        await query.edit_message_text(f"❌ TON payment error: {e}")
+
+async def _callback_crypto_check(update, query, context, user_id, data):
+    parts = data.split('|')
+    if len(parts) != 3:
+        await query.answer("Invalid payment data.")
+        return
+    _, invoice_id, key = parts
+    pending = bot_data.get_pending_crypto(invoice_id)
+    if not pending or int(pending['user_id']) != int(user_id):
+        await query.answer("This payment does not belong to you.")
+        return
+
+    result = await _query_crypto_invoice(invoice_id)
+    if result and result.get('status') == 'paid':
+        txn_id = result.get('hash') or str(invoice_id)
+        if _finalize_payment(int(user_id), key, 'crypto_bot', txn_id, invoice_id):
+            await query.edit_message_text(
+                "✅ Payment confirmed! Feature unlocked.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+            )
+        else:
+            await query.edit_message_text(
+                "❌ Invalid feature or already unlocked.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='feature_store')]])
+            )
+    else:
+        await query.edit_message_text(
+            "⏳ Payment not found yet. If you already paid, wait a moment and try again.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✅ Check again", callback_data=f'crypto_check|{invoice_id}|{key}')]])
+        )
+
+async def _callback_paid_features(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    features = bot_data.get_features()
+    if not features:
+        text = "💰 Paid Features\n\nNo features yet. Add one with ➕ Add/Edit Feature."
+    else:
+        text = "💰 Paid Features\n\n"
+        for key, feat in features.items():
+            status = "🟢" if feat['enabled'] else "🔴"
+            stars = f"{feat['stars_price']}⭐" if feat['stars_price'] else "-"
+            ton = f"{feat['ton_price']} TON" if feat['ton_price'] else "-"
+            text += f"{status} {key}: {feat['title']} — {stars} / {ton}\n"
+
+    keyboard = [
+        [InlineKeyboardButton("➕ Add/Edit Feature", callback_data='add_feature')],
+        [InlineKeyboardButton("📋 Purchases", callback_data='feature_purchases')],
+    ]
+    for key in features:
+        keyboard.append([
+            InlineKeyboardButton(f"🔄 Toggle {key}", callback_data=f'toggle_feature|{key}'),
+            InlineKeyboardButton(f"🗑 {key}", callback_data=f'delete_feature|{key}')
+        ])
+    keyboard.append([InlineKeyboardButton("🔙 Back to Admin Panel", callback_data='admin_panel')])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def _callback_add_feature(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    context.user_data['feature_pending'] = {}
+    context.user_data['awaiting'] = 'feature_key'
+    await query.edit_message_text(
+        '➕ Add/Edit Feature\n\nSend the feature key (short snake_case, e.g. "premium_alerts").\nUsing an existing key edits that feature.',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='paid_features')]])
+    )
+
+async def _callback_toggle_feature(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    key = data.split('|', 1)[1]
+    feat = bot_data.get_feature(key)
+    if not feat:
+        await query.answer("Feature not found.")
+        return
+    bot_data.upsert_feature(key, feat['title'], feat['description'], feat['stars_price'], feat['ton_price'], enabled=not feat['enabled'])
+    status = "enabled" if bot_data.get_feature(key)['enabled'] else "disabled"
+    await query.edit_message_text(
+        f"✅ Feature '{key}' is now {status}.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
+    )
+
+async def _callback_delete_feature(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    key = data.split('|', 1)[1]
+    bot_data.remove_feature(key)
+    await query.edit_message_text(
+        f"✅ Feature '{key}' deleted.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
+    )
+
+async def _callback_feature_purchases(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    purchases = bot_data.get_all_purchases()
+    if not purchases:
+        await query.edit_message_text(
+            "📋 Purchases\n\nNo purchases yet.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
+        )
+        return
+    text = "📋 Purchases\n\n"
+    for p in purchases:
+        text += f"{p['user_id']} — {p['feature_key']} ({p['method']})\n"
+    await query.edit_message_text(
+        text[:4000],
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
+    )
+
 EXACT_CALLBACK_HANDLERS = {
     'check_membership': _callback_check_membership,
     'main_menu': _callback_main_menu,
@@ -987,6 +1378,10 @@ EXACT_CALLBACK_HANDLERS = {
     'unban_user': _callback_unban_user,
     'list_users': _callback_list_users,
     'send_update': _callback_send_update,
+    'feature_store': _callback_feature_store,
+    'paid_features': _callback_paid_features,
+    'add_feature': _callback_add_feature,
+    'feature_purchases': _callback_feature_purchases,
 }
 
 PREFIX_CALLBACK_HANDLERS = [
@@ -995,6 +1390,12 @@ PREFIX_CALLBACK_HANDLERS = [
     ('delete|', _callback_delete_confirm),
     ('asset_page|', _callback_asset_page),
     ('download_asset|', _callback_download_asset),
+    ('buy_feature|', _callback_buy_feature),
+    ('pay_stars|', _callback_pay_stars),
+    ('pay_ton|', _callback_pay_ton),
+    ('crypto_check|', _callback_crypto_check),
+    ('toggle_feature|', _callback_toggle_feature),
+    ('delete_feature|', _callback_delete_feature),
 ]
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1280,6 +1681,83 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting', None)
         logger.info(f"Owner sent update message to {sent} users")
 
+    elif awaiting == 'feature_key':
+        if not is_owner(int(user_id)):
+            return
+        key = update.message.text.strip().replace(' ', '_')
+        if not key:
+            await update.message.reply_text('❌ Invalid feature key.')
+            return
+        pending = context.user_data.setdefault('feature_pending', {})
+        pending['key'] = key
+        context.user_data['awaiting'] = 'feature_title'
+        await update.message.reply_text(f"✅ Feature key: {key}\n\nNow send the feature title (shown to users):")
+
+    elif awaiting == 'feature_title':
+        if not is_owner(int(user_id)):
+            return
+        pending = context.user_data.get('feature_pending') or {}
+        if 'key' not in pending:
+            await update.message.reply_text('❌ Please start over from the admin panel.')
+            context.user_data.pop('awaiting', None)
+            return
+        pending['title'] = update.message.text.strip()
+        context.user_data['awaiting'] = 'feature_desc'
+        await update.message.reply_text("✅ Title saved.\n\nNow send a short description (or send '-' for none):")
+
+    elif awaiting == 'feature_desc':
+        if not is_owner(int(user_id)):
+            return
+        pending = context.user_data.get('feature_pending') or {}
+        if 'key' not in pending:
+            await update.message.reply_text('❌ Please start over from the admin panel.')
+            context.user_data.pop('awaiting', None)
+            return
+        desc = update.message.text.strip()
+        pending['description'] = '' if desc == '-' else desc
+        context.user_data['awaiting'] = 'feature_stars'
+        await update.message.reply_text("✅ Description saved.\n\nNow send the price in Telegram Stars (integer, e.g. 100). Send 0 to disable Stars payment:")
+
+    elif awaiting == 'feature_stars':
+        if not is_owner(int(user_id)):
+            return
+        pending = context.user_data.get('feature_pending') or {}
+        if 'key' not in pending:
+            await update.message.reply_text('❌ Please start over from the admin panel.')
+            context.user_data.pop('awaiting', None)
+            return
+        try:
+            stars = int(update.message.text.strip())
+        except ValueError:
+            await update.message.reply_text('❌ Invalid number. Send an integer (e.g. 100).')
+            return
+        pending['stars'] = stars
+        context.user_data['awaiting'] = 'feature_ton'
+        await update.message.reply_text("✅ Stars price saved.\n\nNow send the price in TON (e.g. 0.5). Send 0 to disable TON payment:")
+
+    elif awaiting == 'feature_ton':
+        if not is_owner(int(user_id)):
+            return
+        pending = context.user_data.get('feature_pending') or {}
+        if 'key' not in pending:
+            await update.message.reply_text('❌ Please start over from the admin panel.')
+            context.user_data.pop('awaiting', None)
+            return
+        try:
+            ton = float(update.message.text.strip())
+        except ValueError:
+            await update.message.reply_text('❌ Invalid number. Send e.g. 0.5.')
+            return
+        key = pending['key']
+        bot_data.upsert_feature(key, pending.get('title', key), pending.get('description', ''), pending.get('stars', 0), ton)
+        context.user_data.pop('feature_pending', None)
+        await update.message.reply_text(
+            f"✅ Feature saved:\nKey: {key}\nTitle: {pending.get('title', key)}\nStars: {pending.get('stars', 0)}⭐\nTON: {ton}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Paid Features", callback_data='paid_features')]])
+        )
+        context.user_data.pop('awaiting', None)
+        logger.info(f"Owner saved paid feature {key}")
+
     elif awaiting == 'import_data':
         if not is_owner(int(user_id)):
             return
@@ -1304,6 +1782,107 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text('❌ Please send a JSON file.')
 
         context.user_data.pop('awaiting', None)
+
+# ---------------------------------------------------------------- payments
+
+async def pre_checkout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    try:
+        await query.answer(ok=True)
+    except Exception as e:
+        logger.error(f"Error answering pre-checkout: {e}")
+
+async def successful_payment_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    user_id = str(update.effective_user.id)
+    payment = update.message.successful_payment
+    payload = payment.invoice_payload or ''
+    txn_id = payment.telegram_payment_charge_id
+
+    if payload.startswith('stars:'):
+        key = payload[6:]
+        if _finalize_payment(int(user_id), key, 'stars', txn_id):
+            feature = bot_data.get_feature(key)
+            title = feature['title'] if feature else key
+            await update.message.reply_text(
+                f"✅ Payment received! Feature unlocked: {title}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+            )
+        else:
+            await update.message.reply_text(
+                "❌ Invalid feature or already unlocked.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+            )
+    else:
+        await update.message.reply_text("✅ Payment received!")
+
+async def _query_crypto_invoice(invoice_id):
+    token = os.getenv('CRYPTO_BOT_TOKEN')
+    if not token:
+        return None
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                'https://pay.crypt.bot/api/getInvoices',
+                headers={'Crypto-Pay-API-Token': token},
+                data={'invoice_ids': str(invoice_id)}
+            ) as response:
+                data = await response.json()
+                if data.get('ok') and data.get('result', {}).get('items'):
+                    return data['result']['items'][0]
+    except Exception as e:
+        logger.error(f"CryptoBot getInvoices error: {e}")
+    return None
+
+_APPLICATION = None
+
+async def _webhook_handler(request):
+    try:
+        data = await request.json()
+    except Exception:
+        return web.Response(status=400)
+    asyncio.create_task(_handle_crypto_webhook(data))
+    return web.Response(status=200)
+
+async def _handle_crypto_webhook(data):
+    try:
+        if data.get('update_type') != 'invoice_paid':
+            return
+        payload = data.get('payload') or {}
+        our_payload = payload.get('payload') or ''
+        if not our_payload.startswith('ton:'):
+            return
+        parts = our_payload.split(':')
+        if len(parts) < 3:
+            return
+        user_id = int(parts[1])
+        feature_key = ':'.join(parts[2:])
+        if payload.get('status') != 'paid':
+            return
+        invoice_id = payload.get('id') or payload.get('invoice_id')
+        txn_id = payload.get('hash') or str(invoice_id)
+        if _finalize_payment(user_id, feature_key, 'crypto_bot', txn_id, invoice_id):
+            feature = bot_data.get_feature(feature_key)
+            title = feature['title'] if feature else feature_key
+            if _APPLICATION:
+                await _APPLICATION.bot.send_message(
+                    chat_id=user_id,
+                    text=f"✅ Payment received! Feature unlocked: {title}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+                )
+    except Exception as e:
+        logger.error(f"CryptoBot webhook processing error: {e}")
+
+async def start_webhook_server(application):
+    global _APPLICATION
+    _APPLICATION = application
+    port = int(os.getenv('WEBHOOK_PORT', '8080'))
+    app = web.Application()
+    app.router.add_post('/cb_webhook', _webhook_handler)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, host='0.0.0.0', port=port)
+    await site.start()
+    logger.info(f"CryptoBot webhook server started on port {port} (POST /cb_webhook)")
 
 # ---------------------------------------------------------------- download & checks
 
@@ -1662,10 +2241,14 @@ def main():
 
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
+    application.add_handler(PreCheckoutQueryHandler(pre_checkout_handler))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment_handler))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_message))
 
     asyncio.get_event_loop().create_task(start_background_checks(application))
+    if os.getenv('CRYPTO_BOT_TOKEN'):
+        asyncio.get_event_loop().create_task(start_webhook_server(application))
 
     logger.info("Bot started successfully!")
     print("Bot started successfully!")

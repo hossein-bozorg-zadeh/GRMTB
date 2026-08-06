@@ -293,6 +293,28 @@ class BotData:
     def remove_required_channel(self):
         self._set_setting('required_channel', '')
 
+    def get_required_channel_link(self):
+        return self._get_setting('required_channel_link')
+
+    def set_required_channel_link(self, link):
+        self._set_setting('required_channel_link', link)
+
+    def remove_required_channel_link(self):
+        self._set_setting('required_channel_link', '')
+
+    def get_joined_members(self):
+        try:
+            return set(json.loads(self._get_setting('joined_members', '[]')))
+        except Exception:
+            return set()
+
+    def record_join(self, user_id):
+        members = self.get_joined_members()
+        if int(user_id) in members:
+            return
+        members.add(int(user_id))
+        self._set_setting('joined_members', json.dumps(sorted(members)))
+
     def get_log_channel(self):
         return self._get_setting('log_channel')
 
@@ -336,6 +358,8 @@ class BotData:
             'special_users': sorted(self.get_special_users()),
             'banned_users': sorted(self.get_banned_users()),
             'required_channel': self.get_required_channel() or None,
+            'required_channel_link': self.get_required_channel_link() or None,
+            'joined_members': sorted(self.get_joined_members()),
             'log_channel': self.get_log_channel() or None,
             'export_date': datetime.now().isoformat()
         }, indent=2)
@@ -383,8 +407,17 @@ class BotData:
                 self.ban_user(uid)
             if data.get('required_channel'):
                 self.set_required_channel(data['required_channel'])
+            else:
+                self.remove_required_channel()
+            if data.get('required_channel_link'):
+                self.set_required_channel_link(data['required_channel_link'])
+            else:
+                self.remove_required_channel_link()
+            self._set_setting('joined_members', json.dumps(sorted(set(data.get('joined_members', [])))))
             if data.get('log_channel'):
                 self.set_log_channel(data['log_channel'])
+            else:
+                self.remove_log_channel()
 
             logger.info("Data imported successfully")
             return True
@@ -396,6 +429,27 @@ bot_data = BotData()
 
 def is_owner(user_id):
     return user_id == OWNER_ID
+
+def _is_numeric_id(value):
+    if not value:
+        return False
+    v = str(value).strip().lstrip('-')
+    return bool(v) and v.isdigit()
+
+def _is_invite_link(value):
+    if not value:
+        return False
+    v = str(value).strip().lower()
+    return v.startswith('http') or 't.me/+' in v or 't.me/joinchat' in v
+
+def _channel_join_url():
+    link = bot_data.get_required_channel_link()
+    if link:
+        return link
+    channel = bot_data.get_required_channel()
+    if channel and not _is_numeric_id(channel):
+        return f"https://t.me/{channel.strip().lstrip('@')}"
+    return None
 
 def can_use_bot(user_id):
     if user_id in bot_data.get_banned_users():
@@ -417,6 +471,7 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
     try:
         member = await context.bot.get_chat_member(required_channel, user_id)
         if member.status in ['member', 'administrator', 'creator']:
+            bot_data.record_join(user_id)
             return True
         return False
     except Exception as e:
@@ -424,11 +479,12 @@ async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT
         return True
 
 def membership_keyboard():
-    channel_link = bot_data.get_required_channel().replace('@', '')
-    return InlineKeyboardMarkup([
-        [InlineKeyboardButton("📢 Join Channel", url=f"https://t.me/{channel_link}")],
-        [InlineKeyboardButton("✅ Check Membership", callback_data='check_membership')]
-    ])
+    url = _channel_join_url()
+    keyboard = []
+    if url:
+        keyboard.append([InlineKeyboardButton("📢 Join Channel", url=url)])
+    keyboard.append([InlineKeyboardButton("✅ Check Membership", callback_data='check_membership')])
+    return InlineKeyboardMarkup(keyboard)
 
 def main_menu_keyboard(user_id):
     keyboard = [
@@ -702,12 +758,18 @@ async def _callback_admin_panel(update, query, context, user_id, data):
     total_users = len(bot_data.get_users())
     special_users = len(bot_data.get_special_users())
     banned_users = len(bot_data.get_banned_users())
+    joined_members = len(bot_data.get_joined_members())
 
-    text = f"👑 Admin Panel\n\nBot Status: {status}\nTotal Users: {total_users}\nSpecial Users: {special_users}\nBanned Users: {banned_users}\n"
+    text = f"👑 Admin Panel\n\nBot Status: {status}\nTotal Users: {total_users}\nSpecial Users: {special_users}\nBanned Users: {banned_users}\nJoined via bot link: {joined_members}\n"
 
     required_channel = bot_data.get_required_channel()
     log_channel = bot_data.get_log_channel()
-    text += f"\nRequired Channel: {required_channel}" if required_channel else "\nRequired Channel: Not Set"
+    if required_channel:
+        text += f"\nRequired Channel: {required_channel}"
+        join_url = _channel_join_url()
+        text += f"\nJoin Link: {join_url}" if join_url else "\nJoin Link: Not Set"
+    else:
+        text += "\nRequired Channel: Not Set"
     text += f"\nLog Channel: {log_channel}" if log_channel else "\nLog Channel: Not Set"
 
     keyboard = [
@@ -732,7 +794,9 @@ async def _callback_set_required_channel(update, query, context, user_id, data):
         [InlineKeyboardButton("❌ Cancel", callback_data='admin_panel')]
     ]
     await query.edit_message_text(
-        '📢 Set Required Channel\n\nSend the channel username (e.g., @mychannel) or ID.\n\nUsers must join this channel to use the bot.',
+        '📢 Set Required Channel\n\nSend the channel username (e.g., @mychannel) or numeric chat ID.\n\n'
+        'For private channels, you will be asked for the invite link (or type "auto" so the bot generates one).\n\n'
+        'Users must join this channel to use the bot.',
         reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
@@ -740,6 +804,7 @@ async def _callback_remove_required_channel(update, query, context, user_id, dat
     if not is_owner(int(user_id)):
         return
     bot_data.remove_required_channel()
+    bot_data.remove_required_channel_link()
     await query.edit_message_text(
         '✅ Required channel removed. All users can now access the bot.',
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data='admin_panel')]])
@@ -1069,14 +1134,76 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     elif awaiting == 'required_channel':
         if not is_owner(int(user_id)):
             return
-        channel = update.message.text.strip()
-        bot_data.set_required_channel(channel)
+        raw = update.message.text.strip()
+        if _is_invite_link(raw):
+            bot_data.set_required_channel_link(raw)
+            context.user_data['awaiting'] = 'required_channel_id'
+            await update.message.reply_text(
+                '✅ Private channel invite link saved.\n\nNow send the channel username (e.g., @mychannel) or numeric chat ID so the bot can verify membership:'
+            )
+            return
+        bot_data.set_required_channel(raw)
+        bot_data.remove_required_channel_link()
+        if _is_numeric_id(raw):
+            context.user_data['awaiting'] = 'required_channel_link'
+            await update.message.reply_text(
+                '✅ Channel ID saved. This looks like a private channel.\n\n'
+                'Send the invite link (https://t.me/+xxxx) —\nor send "auto" to let the bot generate the invite link (the bot must be an admin of the channel) —\nor send "skip" to set it up later.'
+            )
+            return
+        bot_data.set_required_channel_link(f"https://t.me/{raw.lstrip('@')}")
         await update.message.reply_text(
-            f'✅ Required channel set to: {channel}\n\nUsers must now join this channel to use the bot.',
+            f'✅ Required channel set to: {raw}\n\nUsers must now join this channel to use the bot.',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data='admin_panel')]])
         )
         context.user_data.pop('awaiting', None)
-        logger.info(f"Required channel set to {channel}")
+        logger.info(f"Required channel set to {raw}")
+
+    elif awaiting == 'required_channel_link':
+        if not is_owner(int(user_id)):
+            return
+        raw = update.message.text.strip()
+        channel = bot_data.get_required_channel()
+        if raw.lower() == 'auto':
+            try:
+                link = await context.bot.export_chat_invite_link(chat_id=channel)
+                bot_data.set_required_channel_link(link)
+                await update.message.reply_text(
+                    f'✅ Invite link generated by the bot:\n{link}\n\nUsers must now join this channel to use the bot.',
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data='admin_panel')]])
+                )
+                context.user_data.pop('awaiting', None)
+                logger.info(f"Generated invite link for channel {channel}")
+            except Exception as e:
+                logger.error(f"Failed to generate invite link: {e}")
+                await update.message.reply_text(
+                    f'❌ Failed to generate invite link. Make sure the bot is an admin of the channel with invite-link permissions.\n\n'
+                    f'Error: {e}\n\nSend the invite link manually or send "skip".'
+                )
+            return
+        if raw.lower() != 'skip':
+            bot_data.set_required_channel_link(raw)
+        link_display = _channel_join_url() or 'Not set'
+        await update.message.reply_text(
+            f'✅ Required channel set to: {channel}\nJoin link: {link_display}\n\nUsers must now join this channel to use the bot.',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data='admin_panel')]])
+        )
+        context.user_data.pop('awaiting', None)
+        logger.info(f"Required channel link set for channel {channel}")
+
+    elif awaiting == 'required_channel_id':
+        if not is_owner(int(user_id)):
+            return
+        raw = update.message.text.strip()
+        if not _is_invite_link(raw):
+            bot_data.set_required_channel(raw)
+        link_display = _channel_join_url() or 'Not set'
+        await update.message.reply_text(
+            f'✅ Required channel set to: {raw}\nJoin link: {link_display}\n\nUsers must now join this channel to use the bot.',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Admin Panel", callback_data='admin_panel')]])
+        )
+        context.user_data.pop('awaiting', None)
+        logger.info(f"Required channel set to {raw}")
 
     elif awaiting == 'log_channel':
         if not is_owner(int(user_id)):

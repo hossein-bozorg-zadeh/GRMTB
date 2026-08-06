@@ -20,7 +20,7 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 ### 🔐 Security & Access Control
 - **Dual Token System**: Each user sets their own GitHub and GitLab tokens
 - **Encrypted Tokens**: API tokens are encrypted at rest with Fernet (AES) before being stored
-- **Channel Requirement**: Optional mandatory channel membership for bot access
+- **Channel Requirement**: Optional mandatory channel membership for bot access (public and private channels, with bot-generated invite links and a joined-member counter)
 - **User Management**: Ban/unban users, special user privileges
 - **Public/Private Mode**: Toggle bot accessibility
 
@@ -192,8 +192,17 @@ Access the admin panel by clicking **👑 Admin Panel** (owner only).
 
 ### Bot Configuration
 - **🔄 Toggle Bot Status**: Switch between Public/Private mode
-- **📢 Set Required Channel**: Users must join to use bot
+- **📢 Set Required Channel**: Users must join to use bot (supports public and private channels)
 - **📊 Set Log Channel**: Receive daily backups automatically
+
+### Required Channel (public or private)
+- **Public channel**: send the username (e.g. `@mychannel`) — the bot builds the join link automatically
+- **Private channel**: send the numeric chat ID, then:
+  - send the invite link (`https://t.me/+xxxx`), or
+  - send `auto` so the bot generates its own invite link (requires the bot to be an admin with invite-link permission), or
+  - send `skip` to add a link later
+- You can also paste an invite link first and then provide the username/ID for the membership check
+- The admin panel shows the current join link and **how many users joined via the bot's link**
 
 ### User Management
 - **➕ Add Special User**: Grant access when bot is private
@@ -278,9 +287,11 @@ All data is stored in a **SQLite database** (`bot_data.db`, configurable via `DB
 - Use "🔄 Check Now" to manually trigger
 
 ### Channel Membership Issues
-- Make sure bot is administrator in the required channel
+- Make sure bot is administrator in the required channel (for private channels the bot also needs invite-link permission to generate a link with `auto`)
 - Verify channel username is correct (include `@`)
+- For private channels, set the channel ID and invite link in the admin panel
 - Click "✅ Check Membership" after joining
+- Use the "Joined via bot link" counter in the admin panel to monitor how many users joined
 
 ### API Rate Limits
 - GitHub: 5000 requests/hour with token

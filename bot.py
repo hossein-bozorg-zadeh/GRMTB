@@ -1126,7 +1126,8 @@ async def _callback_admin_panel(update, query, context, user_id, data):
         [InlineKeyboardButton("📊 Set Log Channel", callback_data='set_log_channel')],
         [InlineKeyboardButton("👥 Manage Users", callback_data='manage_users')],
         [InlineKeyboardButton("🛒 Shop Settings", callback_data='paid_features')],
-        [InlineKeyboardButton("📣 Send Ads", callback_data='send_update')],
+        [InlineKeyboardButton("📣 Send Update Message", callback_data='send_update')],
+        [InlineKeyboardButton("📣 Send Ads", callback_data='send_ads')],
         [InlineKeyboardButton("💾 Download Data", callback_data='download_data')],
         [InlineKeyboardButton("📋 Download Logs", callback_data='download_logs')],
         [InlineKeyboardButton("📥 Import Data", callback_data='import_data')],
@@ -1302,6 +1303,15 @@ async def _callback_send_update(update, query, context, user_id, data):
     if not is_owner(int(user_id)):
         return
     context.user_data['awaiting'] = 'update_message'
+    await query.edit_message_text(
+        '📣 Send Update Message\n\nType the message to send to all users:',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='admin_panel')]])
+    )
+
+async def _callback_send_ads(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    context.user_data['awaiting'] = 'ads_message'
     await query.edit_message_text(
         '📣 Send Ads\n\nType the ad message to send to free users (non-subscribers) only:',
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='admin_panel')]])
@@ -1732,6 +1742,7 @@ EXACT_CALLBACK_HANDLERS = {
     'unban_user': _callback_unban_user,
     'list_users': _callback_list_users,
     'send_update': _callback_send_update,
+    'send_ads': _callback_send_ads,
     'feature_store': _callback_feature_store,
     'paid_features': _callback_paid_features,
     'add_feature': _callback_add_feature,
@@ -2026,6 +2037,24 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         context.user_data.pop('awaiting', None)
 
     elif awaiting == 'update_message':
+        if not is_owner(int(user_id)):
+            return
+        message = update.message.text
+        sent = 0
+        for uid in bot_data.get_users().keys():
+            try:
+                await context.bot.send_message(chat_id=int(uid), text=f"📣 Bot Update\n\n{message}")
+                sent += 1
+            except Exception as e:
+                logger.error(f"Failed to send to {uid}: {e}")
+        await update.message.reply_text(
+            f'✅ Update message sent to {sent} users.',
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]])
+        )
+        context.user_data.pop('awaiting', None)
+        logger.info(f"Owner sent update message to {sent} users")
+
+    elif awaiting == 'ads_message':
         if not is_owner(int(user_id)):
             return
         message = update.message.text

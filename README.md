@@ -29,6 +29,7 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 - **Channel Configuration**: Set required channel and log channel from bot
 - **Data Management**: Export/import bot data as JSON
 - **Log Access**: Download bot logs for monitoring
+- **📣 Send Update Message**: Broadcast a message to all users
 - **📣 Send Ads**: Send ad messages to free (non-subscribed) users — paid subscribers don't see them
 - **Automatic Backups**: Daily backups to configured log channel
 
@@ -224,6 +225,7 @@ Access the admin panel by clicking **👑 Admin Panel** (owner only).
 - **💾 Download Data**: Export all bot data as JSON
 - **📋 Download Logs**: Download bot activity logs
 - **📥 Import Data**: Restore data from backup
+- **📣 Send Update Message**: Broadcast a message to all users
 - **📣 Send Ads**: Broadcast ads to free users only (subscribers are skipped)
 - **🛒 Shop Settings**: Manage subscription plans, toggle which plans are visible, view subscriptions, set the download limit (owner only)
 

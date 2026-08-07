@@ -1126,7 +1126,7 @@ async def _callback_admin_panel(update, query, context, user_id, data):
         [InlineKeyboardButton("📊 Set Log Channel", callback_data='set_log_channel')],
         [InlineKeyboardButton("👥 Manage Users", callback_data='manage_users')],
         [InlineKeyboardButton("🛒 Shop Settings", callback_data='paid_features')],
-        [InlineKeyboardButton("📣 Send Update Message", callback_data='send_update')],
+        [InlineKeyboardButton("📣 Send Ads", callback_data='send_update')],
         [InlineKeyboardButton("💾 Download Data", callback_data='download_data')],
         [InlineKeyboardButton("📋 Download Logs", callback_data='download_logs')],
         [InlineKeyboardButton("📥 Import Data", callback_data='import_data')],
@@ -1303,7 +1303,7 @@ async def _callback_send_update(update, query, context, user_id, data):
         return
     context.user_data['awaiting'] = 'update_message'
     await query.edit_message_text(
-        '📣 Send Update Message\n\nType the message to send to all users:',
+        '📣 Send Ads\n\nType the ad message to send to free users (non-subscribers) only:',
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='admin_panel')]])
     )
 
@@ -2031,17 +2031,19 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
         message = update.message.text
         sent = 0
         for uid in bot_data.get_users().keys():
+            if is_subscribed(int(uid)):
+                continue
             try:
                 await context.bot.send_message(chat_id=int(uid), text=f"📣 Bot Update\n\n{message}")
                 sent += 1
             except Exception as e:
                 logger.error(f"Failed to send to {uid}: {e}")
         await update.message.reply_text(
-            f'✅ Update message sent to {sent} users.',
+            f'✅ Ad message sent to {sent} free users.',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='admin_panel')]])
         )
         context.user_data.pop('awaiting', None)
-        logger.info(f"Owner sent update message to {sent} users")
+        logger.info(f"Owner sent ad message to {sent} free users")
 
     elif awaiting == 'feature_key':
         if not is_owner(int(user_id)):

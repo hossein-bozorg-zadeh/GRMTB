@@ -13,7 +13,7 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 - **Self-Hosted GitLab**: Track releases from your own GitLab instances
 - **Real-time Notifications**: Get instant alerts when new releases are published
 - **Missed Release Catch-Up**: If the bot is offline when releases are published, it notifies you about every release you missed (not just the newest one)
-- **Download Integration**: Download release assets directly through Telegram (files < 50MB)
+- **Download Integration**: Subscribers can download release assets through Telegram (bot-file or direct-link mode)
 - **Customizable Intervals**: Set check intervals per repository (6h, 12h, 24h, 48h, 72h)
 - **Manual Check**: Force check all repositories on demand
 
@@ -38,7 +38,8 @@ A powerful Telegram bot that monitors GitHub and GitLab repositories for new rel
 - **User-Specific Settings**: Each user manages their own repositories and tokens
 - **Smart Notifications**: Only notifies on new releases, not duplicates
 - **Persistent Check History**: Last-check timestamps survive restarts (no re-check storm after redeploy)
-- **Paid Features**: Monetize premium features with Telegram Stars and/or TON (via CryptoBot)
+- **Subscriptions**: Monetize with subscription plans paid via Telegram Stars and/or TON (via CryptoBot)
+- **Channel Notifications**: Subscribers can mirror release alerts to their own channel
 
 ## 📋 Prerequisites
 
@@ -187,9 +188,11 @@ Self-hosted repos are marked as `(self-hosted)` in your repository list.
 
 When a new release is detected:
 1. You'll receive a notification with release details
-2. If files are available, click the download button
-3. Files under 50MB are sent directly via Telegram
-4. Larger files show a direct download link
+2. **Download links require an active subscription** — free users only see the release info with a subscribe prompt
+3. Subscribers click the download button; the delivery depends on the user's download mode (`Bot file` / `Direct link`):
+   - **Bot file**: files ≤ 50MB are uploaded to Telegram; larger files show a direct download link
+   - **Direct link**: a download URL is posted instead
+4. Files above the admin-configured **download limit** (default 1.9 GB, set in Shop Settings) are not served, even for subscribers
 
 If several releases were published while the bot was offline, you receive a separate notification for **each** release (oldest first).
 
@@ -222,6 +225,7 @@ Access the admin panel by clicking **👑 Admin Panel** (owner only).
 - **📋 Download Logs**: Download bot activity logs
 - **📥 Import Data**: Restore data from backup
 - **📣 Send Update Message**: Broadcast to all users
+- **🛒 Shop Settings**: Manage subscription plans, toggle which plans are visible, view subscriptions, set the download limit (owner only)
 
 ### Automatic Backups
 
@@ -230,9 +234,9 @@ If you set a log channel:
 - Log files are sent to the channel
 - Keeps your data safe without manual intervention
 
-## 💰 Paid Features (Telegram Stars + TON)
+## 💰 Subscriptions (Telegram Stars + TON)
 
-The bot supports selling premium features with two payment methods:
+The bot sells **subscription plans** (e.g. 1 month, 3 months, 6 months, 1 year) with two payment methods. An active subscription unlocks release download links and channel notifications.
 
 ### 1. Telegram Stars
 
@@ -242,7 +246,7 @@ Telegram's native in-app currency. To enable:
 2. Choose **Payments** and create/attach a payment provider (Telegram Stars)
 3. No additional environment variables needed — stars use the bot token directly
 
-Users tap the `✨ Buy Features` button and pay with Stars inline. Purchases are confirmed automatically via Telegram's pre-checkout flow.
+Users tap the `⭐ Subscribe` button and pay with Stars inline. Payments are confirmed automatically via Telegram's pre-checkout flow. Buying a plan while subscribed **extends** the remaining time.
 
 ### 2. TON (via CryptoBot)
 
@@ -257,19 +261,33 @@ Users pay via a CryptoBot invoice link. The bot confirms payment through the web
 
 > **Note**: For the CryptoBot webhook to work, your deployment must expose a public HTTPS URL on `WEBHOOK_PORT`. The "I've paid — Check" button still works without a public URL.
 
-### Admin: Managing Paid Features
+### Admin: Managing the Shop (owner only)
 
-The owner (and special users) can open **💰 Paid Features** from the admin panel to:
-- Add a feature (key, title, description, price in Stars, price in TON)
-- Toggle features on/off (disabled features aren't shown in the store)
-- Delete features
-- View purchase history (`feature_purchases`)
+The owner can open **🛒 Shop Settings** from the admin panel to:
+- Add/edit plans (key, title, description, duration in days, price in Stars, price in TON)
+- **Toggle plans on/off** — only enabled plans appear in the store (e.g. hide the 6-month and 1-year plans to show just the first 2)
+- Delete plans
+- View subscriptions and their expiry (`feature_purchases`)
+- Set the **download limit** in MB (e.g. `1900` for 1.9 GB) — files above this size are not served
 
-### Unlocking Logic
+Only the **owner** can change shop settings; special users cannot.
 
-- Purchases are one-time unlocks keyed by `(user_id, feature_key)` — no expiry or subscription
-- The owner and special users bypass the paywall automatically
-- Purchase records are included in data export/import, so unlocks survive backup restore
+### Subscription Logic
+
+- One active subscription per user; buying any plan adds its duration to the remaining time
+- The owner and special users bypass the subscription check automatically
+- Plans and subscriptions are included in data export/import, so they survive backup restore
+
+## 📢 Subscriber Channel Notifications
+
+Subscribers can have release notifications (with download links) posted to their own channel as well as their private chat:
+
+1. Open **📢 Channel Notifications** in the main menu
+2. **📡 Set Channel** — send the channel username or ID (the bot must be an admin of that channel)
+3. **📦 Select Repos** — choose which of your tracked repos should also be posted to the channel
+4. **📥 Download mode** — `Bot file` (small files are uploaded to Telegram) or `Direct link` (download URLs are posted instead)
+
+Free users see a subscribe prompt instead of the channel-notifications page.
 
 ## 📁 Project Structure
 
@@ -319,6 +337,8 @@ All data is stored in a **SQLite database** (`bot_data.db`, configurable via `DB
 - Last release information
 - Last-check timestamps
 - Bot settings
+- Subscription plans and active subscriptions
+- Subscriber channel bindings and download modes
 
 **Backup regularly!** Use the admin panel to download data exports. Note that exported tokens are encrypted — use the same `TOKEN_ENCRYPTION_KEY` when restoring on another deployment.
 

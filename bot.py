@@ -79,21 +79,23 @@ class BotData:
                 key TEXT PRIMARY KEY,
                 value TEXT
             );
-            CREATE TABLE IF NOT EXISTS paid_features (
-                feature_key TEXT PRIMARY KEY,
+            CREATE TABLE IF NOT EXISTS plans (
+                plan_key TEXT PRIMARY KEY,
                 title TEXT,
                 description TEXT,
+                duration_days INTEGER NOT NULL DEFAULT 30,
                 stars_price INTEGER NOT NULL DEFAULT 0,
                 ton_price REAL NOT NULL DEFAULT 0,
-                enabled INTEGER NOT NULL DEFAULT 1
+                enabled INTEGER NOT NULL DEFAULT 1,
+                position INTEGER NOT NULL DEFAULT 0
             );
-            CREATE TABLE IF NOT EXISTS purchases (
-                user_id INTEGER,
-                feature_key TEXT,
-                paid_at TEXT,
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                user_id INTEGER PRIMARY KEY,
+                plan_key TEXT,
+                started_at TEXT,
+                expires_at TEXT,
                 method TEXT,
-                txn_id TEXT,
-                PRIMARY KEY (user_id, feature_key)
+                txn_id TEXT
             );
             CREATE TABLE IF NOT EXISTS pending_crypto (
                 invoice_id TEXT PRIMARY KEY,
@@ -101,8 +103,60 @@ class BotData:
                 feature_key TEXT,
                 created_at TEXT
             );
+            CREATE TABLE IF NOT EXISTS subscriber_channels (
+                user_id INTEGER PRIMARY KEY,
+                channel TEXT,
+                mode TEXT NOT NULL DEFAULT 'bot_file'
+            );
+            CREATE TABLE IF NOT EXISTS subscriber_channel_repos (
+                user_id INTEGER,
+                repo TEXT,
+                PRIMARY KEY (user_id, repo)
+            );
+            CREATE TABLE IF NOT EXISTS user_settings (
+                user_id INTEGER PRIMARY KEY,
+                download_mode TEXT NOT NULL DEFAULT 'bot_file'
+            );
         ''')
         self.conn.commit()
+        self._migrate_payment_tables()
+
+    def _migrate_payment_tables(self):
+        try:
+            old = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='paid_features'").fetchone()
+            if old:
+                count = self.conn.execute('SELECT COUNT(*) FROM plans').fetchone()[0]
+                if count == 0:
+                    rows = self.conn.execute('SELECT * FROM paid_features').fetchall()
+                    for i, r in enumerate(rows):
+                        self.conn.execute(
+                            'INSERT OR IGNORE INTO plans (plan_key, title, description, duration_days, stars_price, ton_price, enabled, position) '
+                            'VALUES (?, ?, ?, ?, ?, ?, ?, ?)',
+                            (r['feature_key'], r['title'], r['description'] or '', 30, r['stars_price'] or 0, r['ton_price'] or 0, r['enabled'] or 1, i)
+                        )
+                    self.conn.commit()
+        except Exception as e:
+            logger.warning(f"Migration paid_features -> plans skipped: {e}")
+        try:
+            old = self.conn.execute("SELECT name FROM sqlite_master WHERE type='table' AND name='purchases'").fetchone()
+            if old:
+                count = self.conn.execute('SELECT COUNT(*) FROM subscriptions').fetchone()[0]
+                if count == 0:
+                    rows = self.conn.execute('SELECT * FROM purchases').fetchall()
+                    for r in rows:
+                        paid = r['paid_at'] or datetime.now().isoformat()
+                        try:
+                            start = datetime.fromisoformat(paid)
+                        except ValueError:
+                            start = datetime.now()
+                        expires = (start + timedelta(days=30)).isoformat()
+                        self.conn.execute(
+                            'INSERT OR IGNORE INTO subscriptions (user_id, plan_key, started_at, expires_at, method, txn_id) VALUES (?, ?, ?, ?, ?, ?)',
+                            (r['user_id'], r['feature_key'], paid, expires, r['method'] or 'stars', r['txn_id'] or '')
+                        )
+                    self.conn.commit()
+        except Exception as e:
+            logger.warning(f"Migration purchases -> subscriptions skipped: {e}")
 
     def _get_setting(self, key, default=None):
         row = self.conn.execute('SELECT value FROM settings WHERE key = ?', (key,)).fetchone()
@@ -338,69 +392,160 @@ class BotData:
         members.add(int(user_id))
         self._set_setting('joined_members', json.dumps(sorted(members)))
 
-    def get_features(self):
-        features = {}
-        for row in self.conn.execute('SELECT * FROM paid_features'):
-            features[row['feature_key']] = {
+    def get_plans(self):
+        plans = {}
+        for row in self.conn.execute('SELECT * FROM plans ORDER BY position ASC, rowid ASC'):
+            plans[row['plan_key']] = {
                 'title': row['title'],
                 'description': row['description'],
+                'duration_days': row['duration_days'],
                 'stars_price': row['stars_price'],
                 'ton_price': row['ton_price'],
                 'enabled': bool(row['enabled']),
+                'position': row['position'],
             }
-        return features
+        return plans
 
-    def get_feature(self, feature_key):
-        row = self.conn.execute('SELECT * FROM paid_features WHERE feature_key = ?', (feature_key,)).fetchone()
+    def get_plan(self, plan_key):
+        row = self.conn.execute('SELECT * FROM plans WHERE plan_key = ?', (plan_key,)).fetchone()
         if not row:
             return None
         return {
             'title': row['title'],
             'description': row['description'],
+            'duration_days': row['duration_days'],
             'stars_price': row['stars_price'],
             'ton_price': row['ton_price'],
             'enabled': bool(row['enabled']),
+            'position': row['position'],
         }
 
-    def upsert_feature(self, feature_key, title, description, stars_price, ton_price, enabled=1):
+    def upsert_plan(self, plan_key, title, description, duration_days, stars_price, ton_price, enabled=1, position=None):
+        if position is None:
+            row = self.conn.execute('SELECT COALESCE(MAX(position), -1) AS m FROM plans').fetchone()
+            position = row['m'] + 1
         self.conn.execute(
-            'INSERT INTO paid_features (feature_key, title, description, stars_price, ton_price, enabled) '
-            'VALUES (?, ?, ?, ?, ?, ?) '
-            'ON CONFLICT(feature_key) DO UPDATE SET title = excluded.title, description = excluded.description, '
-            'stars_price = excluded.stars_price, ton_price = excluded.ton_price, enabled = excluded.enabled',
-            (feature_key, title, description, int(stars_price or 0), float(ton_price or 0), 1 if enabled else 0)
+            'INSERT INTO plans (plan_key, title, description, duration_days, stars_price, ton_price, enabled, position) '
+            'VALUES (?, ?, ?, ?, ?, ?, ?, ?) '
+            'ON CONFLICT(plan_key) DO UPDATE SET title = excluded.title, description = excluded.description, '
+            'duration_days = excluded.duration_days, stars_price = excluded.stars_price, '
+            'ton_price = excluded.ton_price, enabled = excluded.enabled',
+            (plan_key, title, description, int(duration_days or 30), int(stars_price or 0), float(ton_price or 0),
+             1 if enabled else 0, position)
         )
         self.conn.commit()
 
-    def remove_feature(self, feature_key):
-        self.conn.execute('DELETE FROM paid_features WHERE feature_key = ?', (feature_key,))
-        self.conn.execute('DELETE FROM purchases WHERE feature_key = ?', (feature_key,))
-        self.conn.execute('DELETE FROM pending_crypto WHERE feature_key = ?', (feature_key,))
+    def remove_plan(self, plan_key):
+        self.conn.execute('DELETE FROM plans WHERE plan_key = ?', (plan_key,))
+        self.conn.execute('DELETE FROM pending_crypto WHERE feature_key = ?', (plan_key,))
         self.conn.commit()
 
-    def has_purchased(self, user_id, feature_key):
-        row = self.conn.execute('SELECT 1 FROM purchases WHERE user_id = ? AND feature_key = ?', (int(user_id), feature_key)).fetchone()
+    def get_subscription(self, user_id):
+        row = self.conn.execute('SELECT * FROM subscriptions WHERE user_id = ?', (int(user_id),)).fetchone()
+        return dict(row) if row else None
+
+    def has_subscription(self, user_id):
+        return self.get_subscription(user_id) is not None
+
+    def add_subscription(self, user_id, plan_key, method, txn_id):
+        plan = self.get_plan(plan_key)
+        if not plan:
+            return False
+        now = datetime.now()
+        existing = self.get_subscription(user_id)
+        base = now
+        if existing:
+            try:
+                exp = datetime.fromisoformat(existing['expires_at'])
+                if exp > now:
+                    base = exp
+            except (TypeError, ValueError):
+                pass
+        expires = base + timedelta(days=plan['duration_days'])
+        self.conn.execute(
+            'INSERT INTO subscriptions (user_id, plan_key, started_at, expires_at, method, txn_id) '
+            'VALUES (?, ?, ?, ?, ?, ?) '
+            'ON CONFLICT(user_id) DO UPDATE SET plan_key = excluded.plan_key, started_at = excluded.started_at, '
+            'expires_at = excluded.expires_at, method = excluded.method, txn_id = excluded.txn_id',
+            (int(user_id), plan_key, now.isoformat(), expires.isoformat(), method, txn_id)
+        )
+        self.conn.commit()
+        return True
+
+    def get_all_subscriptions(self):
+        rows = self.conn.execute('SELECT * FROM subscriptions ORDER BY expires_at DESC').fetchall()
+        return [dict(row) for row in rows]
+
+    def set_channel(self, user_id, channel):
+        self.conn.execute(
+            'INSERT INTO subscriber_channels (user_id, channel, mode) VALUES (?, ?, \'bot_file\') '
+            'ON CONFLICT(user_id) DO UPDATE SET channel = excluded.channel',
+            (int(user_id), channel)
+        )
+        self.conn.commit()
+
+    def get_channel_settings(self, user_id):
+        row = self.conn.execute('SELECT * FROM subscriber_channels WHERE user_id = ?', (int(user_id),)).fetchone()
+        return dict(row) if row else None
+
+    def remove_channel(self, user_id):
+        self.conn.execute('DELETE FROM subscriber_channels WHERE user_id = ?', (int(user_id),))
+        self.conn.execute('DELETE FROM subscriber_channel_repos WHERE user_id = ?', (int(user_id),))
+        self.conn.commit()
+
+    def set_channel_mode(self, user_id, mode):
+        mode = 'bot_file' if mode != 'direct_link' else 'direct_link'
+        self.conn.execute(
+            'INSERT INTO subscriber_channels (user_id, channel, mode) VALUES (?, \'\', ?) '
+            'ON CONFLICT(user_id) DO UPDATE SET mode = excluded.mode',
+            (int(user_id), mode)
+        )
+        self.conn.commit()
+
+    def get_channel_repos(self, user_id):
+        rows = self.conn.execute('SELECT repo FROM subscriber_channel_repos WHERE user_id = ?', (int(user_id),)).fetchall()
+        return [row['repo'] for row in rows]
+
+    def has_channel_repo(self, user_id, repo):
+        row = self.conn.execute('SELECT 1 FROM subscriber_channel_repos WHERE user_id = ? AND repo = ?', (int(user_id), repo)).fetchone()
         return row is not None
 
-    def record_purchase(self, user_id, feature_key, method, txn_id):
+    def add_channel_repo(self, user_id, repo):
+        self.conn.execute('INSERT OR IGNORE INTO subscriber_channel_repos (user_id, repo) VALUES (?, ?)', (int(user_id), repo))
+        self.conn.commit()
+
+    def remove_channel_repo(self, user_id, repo):
+        self.conn.execute('DELETE FROM subscriber_channel_repos WHERE user_id = ? AND repo = ?', (int(user_id), repo))
+        self.conn.commit()
+
+    def toggle_channel_repo(self, user_id, repo):
+        if self.has_channel_repo(user_id, repo):
+            self.remove_channel_repo(user_id, repo)
+            return False
+        self.add_channel_repo(user_id, repo)
+        return True
+
+    def get_download_mode(self, user_id):
+        row = self.conn.execute('SELECT download_mode FROM user_settings WHERE user_id = ?', (int(user_id),)).fetchone()
+        return row['download_mode'] if row else 'bot_file'
+
+    def set_download_mode(self, user_id, mode):
+        mode = 'bot_file' if mode != 'direct_link' else 'direct_link'
         self.conn.execute(
-            'INSERT OR IGNORE INTO purchases (user_id, feature_key, paid_at, method, txn_id) VALUES (?, ?, ?, ?, ?)',
-            (int(user_id), feature_key, datetime.now().isoformat(), method, txn_id)
+            'INSERT INTO user_settings (user_id, download_mode) VALUES (?, ?) '
+            'ON CONFLICT(user_id) DO UPDATE SET download_mode = excluded.download_mode',
+            (int(user_id), mode)
         )
         self.conn.commit()
 
-    def get_purchases(self, user_id):
-        rows = self.conn.execute('SELECT feature_key, paid_at, method FROM purchases WHERE user_id = ? ORDER BY paid_at DESC', (int(user_id),)).fetchall()
-        return [dict(row) for row in rows]
+    def get_max_download_size(self):
+        try:
+            return int(self._get_setting('max_download_size', 0) or 0)
+        except (TypeError, ValueError):
+            return 0
 
-    def get_all_purchases(self):
-        rows = self.conn.execute('SELECT * FROM purchases ORDER BY paid_at DESC').fetchall()
-        return [dict(row) for row in rows]
-
-    def is_feature_unlocked(self, user_id, feature_key):
-        if is_owner(user_id) or int(user_id) in self.get_special_users():
-            return True
-        return self.has_purchased(user_id, feature_key)
+    def set_max_download_size(self, size_bytes):
+        self._set_setting('max_download_size', str(int(size_bytes)))
 
     def save_pending_crypto(self, invoice_id, user_id, feature_key):
         self.conn.execute(
@@ -463,13 +608,31 @@ class BotData:
             'required_channel_link': self.get_required_channel_link() or None,
             'joined_members': sorted(self.get_joined_members()),
             'log_channel': self.get_log_channel() or None,
-            'features': self.get_features(),
-            'purchases': self.get_all_purchases(),
+            'max_download_size': self.get_max_download_size(),
+            'plans': self.get_plans(),
+            'subscriptions': self.get_all_subscriptions(),
+            'channel_settings': self._export_channel_settings(),
+            'user_settings': self._export_user_settings(),
             'export_date': datetime.now().isoformat()
         }, indent=2)
 
+    def _export_channel_settings(self):
+        channels = {}
+        repos = {}
+        for row in self.conn.execute('SELECT user_id, channel, mode FROM subscriber_channels'):
+            uid = str(row['user_id'])
+            channels[uid] = {'channel': row['channel'], 'mode': row['mode']}
+        for row in self.conn.execute('SELECT user_id, repo FROM subscriber_channel_repos'):
+            uid = str(row['user_id'])
+            repos.setdefault(uid, []).append(row['repo'])
+        return {'channels': channels, 'repos': repos}
+
+    def _export_user_settings(self):
+        return {str(r['user_id']): r['download_mode'] for r in self.conn.execute('SELECT user_id, download_mode FROM user_settings')}
+
     def _clear_all(self):
-        for table in ['users', 'repos', 'user_tokens', 'check_intervals', 'last_releases', 'last_checks', 'gitlab_instances', 'paid_features', 'purchases', 'pending_crypto']:
+        for table in ['users', 'repos', 'user_tokens', 'check_intervals', 'last_releases', 'last_checks', 'gitlab_instances',
+                      'plans', 'subscriptions', 'pending_crypto', 'subscriber_channels', 'subscriber_channel_repos', 'user_settings']:
             self.conn.execute(f'DELETE FROM {table}')
         self.conn.commit()
 
@@ -523,20 +686,40 @@ class BotData:
             else:
                 self.remove_log_channel()
 
-            for key, feat in (data.get('features') or {}).items():
-                self.upsert_feature(
-                    key, feat.get('title', key), feat.get('description', ''),
-                    feat.get('stars_price', 0), feat.get('ton_price', 0), feat.get('enabled', True)
+            for key, plan in (data.get('plans') or {}).items():
+                self.upsert_plan(
+                    key, plan.get('title', key), plan.get('description', ''),
+                    plan.get('duration_days', 30), plan.get('stars_price', 0), plan.get('ton_price', 0),
+                    plan.get('enabled', True), plan.get('position')
                 )
-            for purchase in (data.get('purchases') or []):
+            for sub in (data.get('subscriptions') or []):
                 try:
                     self.conn.execute(
-                        'INSERT OR IGNORE INTO purchases (user_id, feature_key, paid_at, method, txn_id) VALUES (?, ?, ?, ?, ?)',
-                        (int(purchase['user_id']), purchase['feature_key'], purchase.get('paid_at', datetime.now().isoformat()),
-                         purchase.get('method', 'stars'), purchase.get('txn_id', ''))
+                        'INSERT OR REPLACE INTO subscriptions (user_id, plan_key, started_at, expires_at, method, txn_id) '
+                        'VALUES (?, ?, ?, ?, ?, ?)',
+                        (int(sub['user_id']), sub.get('plan_key', 'premium'), sub.get('started_at', datetime.now().isoformat()),
+                         sub.get('expires_at', datetime.now().isoformat()), sub.get('method', 'stars'), sub.get('txn_id', ''))
                     )
                 except Exception as e:
-                    logger.error(f"Skipping purchase row: {e}")
+                    logger.error(f"Skipping subscription row: {e}")
+
+            ch = data.get('channel_settings') or {}
+            for uid, info in (ch.get('channels') or {}).items():
+                self.conn.execute(
+                    'INSERT OR REPLACE INTO subscriber_channels (user_id, channel, mode) VALUES (?, ?, ?)',
+                    (int(uid), info.get('channel', ''), info.get('mode', 'bot_file'))
+                )
+            for uid, repo_list in (ch.get('repos') or {}).items():
+                for repo in repo_list:
+                    self.conn.execute('INSERT OR IGNORE INTO subscriber_channel_repos (user_id, repo) VALUES (?, ?)', (int(uid), repo))
+            for uid, mode in (data.get('user_settings') or {}).items():
+                self.conn.execute(
+                    'INSERT OR REPLACE INTO user_settings (user_id, download_mode) VALUES (?, ?)',
+                    (int(uid), 'bot_file' if mode != 'direct_link' else 'direct_link')
+                )
+            if data.get('max_download_size'):
+                self.set_max_download_size(int(data['max_download_size']))
+
             self.conn.commit()
 
             logger.info("Data imported successfully")
@@ -578,32 +761,48 @@ def can_use_bot(user_id):
         return True
     return False
 
-def is_feature_unlocked(user_id, feature_key):
+def is_subscribed(user_id):
     if is_owner(user_id) or int(user_id) in bot_data.get_special_users():
         return True
-    return bot_data.has_purchased(user_id, feature_key)
+    sub = bot_data.get_subscription(user_id)
+    return sub is not None and sub['expires_at'] > datetime.now().isoformat()
 
-def feature_locked_keyboard(user_id, feature_key):
-    if is_feature_unlocked(user_id, feature_key):
+def subscription_info(user_id):
+    sub = bot_data.get_subscription(user_id)
+    if not sub:
         return None
-    feature = bot_data.get_feature(feature_key)
-    if not feature:
+    return sub
+
+def subscription_locked_keyboard(user_id):
+    if is_subscribed(user_id):
         return None
     return InlineKeyboardMarkup([[
-        InlineKeyboardButton(f"🔒 Unlock {feature['title']}", callback_data=f'buy_feature|{feature_key}')
+        InlineKeyboardButton("🔒 Subscribe", callback_data='feature_store')
     ]])
 
-def _finalize_payment(user_id, feature_key, method, txn_id, invoice_id=None):
-    feature = bot_data.get_feature(feature_key)
-    if not feature:
+def _finalize_payment(user_id, plan_key, method, txn_id, invoice_id=None):
+    plan = bot_data.get_plan(plan_key)
+    if not plan:
         return False
-    if bot_data.has_purchased(user_id, feature_key):
+    if not bot_data.add_subscription(user_id, plan_key, method, txn_id):
         return False
-    bot_data.record_purchase(user_id, feature_key, method, txn_id)
     if invoice_id is not None:
         bot_data.remove_pending_crypto(invoice_id)
-    logger.info(f"User {user_id} purchased feature '{feature_key}' via {method}")
+    logger.info(f"User {user_id} subscribed to plan '{plan_key}' via {method}")
     return True
+
+def _format_duration(days):
+    try:
+        days = int(days)
+    except (TypeError, ValueError):
+        return f"{days} days"
+    if days % 365 == 0:
+        n = days // 365
+        return f"{n} year{'s' if n > 1 else ''}"
+    if days % 30 == 0:
+        n = days // 30
+        return f"{n} month{'s' if n > 1 else ''}"
+    return f"{days} days"
 
 async def check_channel_membership(update: Update, context: ContextTypes.DEFAULT_TYPE):
     required_channel = bot_data.get_required_channel()
@@ -640,7 +839,8 @@ def main_menu_keyboard(user_id):
         [InlineKeyboardButton("🔑 Set API Tokens", callback_data='set_tokens')],
         [InlineKeyboardButton("⏱ Set Check Interval", callback_data='set_interval')],
         [InlineKeyboardButton("🔄 Check Now", callback_data='check_now')],
-        [InlineKeyboardButton("✨ Buy Features", callback_data='feature_store')]
+        [InlineKeyboardButton("📢 Channel Notifications", callback_data='channel_settings')],
+        [InlineKeyboardButton("⭐ Subscribe", callback_data='feature_store')]
     ]
     if is_owner(int(user_id)):
         keyboard.append([InlineKeyboardButton("👑 Admin Panel", callback_data='admin_panel')])
@@ -925,7 +1125,7 @@ async def _callback_admin_panel(update, query, context, user_id, data):
         [InlineKeyboardButton("📢 Set Required Channel", callback_data='set_required_channel')],
         [InlineKeyboardButton("📊 Set Log Channel", callback_data='set_log_channel')],
         [InlineKeyboardButton("👥 Manage Users", callback_data='manage_users')],
-        [InlineKeyboardButton("💰 Paid Features", callback_data='paid_features')],
+        [InlineKeyboardButton("🛒 Shop Settings", callback_data='paid_features')],
         [InlineKeyboardButton("📣 Send Update Message", callback_data='send_update')],
         [InlineKeyboardButton("💾 Download Data", callback_data='download_data')],
         [InlineKeyboardButton("📋 Download Logs", callback_data='download_logs')],
@@ -1107,79 +1307,84 @@ async def _callback_send_update(update, query, context, user_id, data):
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='admin_panel')]])
     )
 
-# ---------------------------------------------------------------- paid features
+# ---------------------------------------------------------------- subscription store
 
 async def _callback_feature_store(update, query, context, user_id, data):
-    features = bot_data.get_features()
-    enabled = {k: v for k, v in features.items() if v['enabled']}
+    plans = bot_data.get_plans()
+    enabled = {k: v for k, v in plans.items() if v['enabled']}
     if not enabled:
         await query.edit_message_text(
-            '✨ Feature Store\n\nNo paid features available yet.',
+            '⭐ Subscription Plans\n\nNo plans available yet.',
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='main_menu')]])
         )
         return
 
-    text = '✨ Feature Store\n\nUnlock premium features:\n\n'
+    subscribed = is_subscribed(int(user_id))
+    text = '⭐ Subscription Plans\n\n'
+    if subscribed:
+        sub = subscription_info(int(user_id))
+        exp = sub['expires_at'][:10] if sub and sub.get('expires_at') else ''
+        text += f"✅ You are subscribed until {exp}\n\n"
+    else:
+        text += "Subscribe to unlock release download links, channel notifications and more:\n\n"
+
     keyboard = []
-    for i, (key, feat) in enumerate(enabled.items(), 1):
-        owned = is_feature_unlocked(int(user_id), key)
+    for i, (key, plan) in enumerate(enabled.items(), 1):
         prices = []
-        if feat['stars_price']:
-            prices.append(f"{feat['stars_price']}⭐")
-        if feat['ton_price']:
-            prices.append(f"{feat['ton_price']} TON")
-        mark = "✅" if owned else "🔒"
-        text += f"{i}. {mark} {feat['title']} — {', '.join(prices)}\n"
-        label = f"{mark} {feat['title']}"
-        keyboard.append([InlineKeyboardButton(label[:60], callback_data=f'buy_feature|{key}')])
+        if plan['stars_price']:
+            prices.append(f"{plan['stars_price']}⭐")
+        if plan['ton_price']:
+            prices.append(f"{plan['ton_price']} TON")
+        duration = _format_duration(plan['duration_days'])
+        text += f"{i}. {plan['title']} — {duration} — {', '.join(prices)}\n"
+        keyboard.append([InlineKeyboardButton(f"{plan['title']}", callback_data=f'buy_feature|{key}')])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='main_menu')])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def _callback_buy_feature(update, query, context, user_id, data):
     key = data.split('|', 1)[1]
-    feat = bot_data.get_feature(key)
-    if not feat:
-        await query.answer("Feature not found.")
+    plan = bot_data.get_plan(key)
+    if not plan:
+        await query.answer("Plan not found.")
         return
 
-    if is_feature_unlocked(int(user_id), key):
-        await query.edit_message_text(
-            f"✅ You already own: {feat['title']}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='feature_store')]])
-        )
-        return
-
-    text = f"🔒 {feat['title']}\n\n{feat['description'] or 'No description available.'}\n\n"
+    text = f"{plan['title']}\n\n{plan['description'] or 'No description available.'}\n\n"
+    text += f"⏳ Duration: {_format_duration(plan['duration_days'])}\n"
     prices = []
-    if feat['stars_price']:
-        prices.append(f"⭐ {feat['stars_price']} Stars")
-    if feat['ton_price']:
-        prices.append(f"💎 {feat['ton_price']} TON")
+    if plan['stars_price']:
+        prices.append(f"⭐ {plan['stars_price']} Stars")
+    if plan['ton_price']:
+        prices.append(f"💎 {plan['ton_price']} TON")
     text += "Price: " + " / ".join(prices)
 
+    if is_subscribed(int(user_id)):
+        sub = subscription_info(int(user_id))
+        exp = sub['expires_at'][:10] if sub and sub.get('expires_at') else ''
+        text += f"\n\n✅ You are already subscribed until {exp}. Buying this plan will extend your subscription."
+
     keyboard = []
-    if feat['stars_price']:
-        keyboard.append([InlineKeyboardButton(f"⭐ Pay {feat['stars_price']} Stars", callback_data=f'pay_stars|{key}')])
-    if feat['ton_price']:
-        keyboard.append([InlineKeyboardButton(f"💎 Pay {feat['ton_price']} TON", callback_data=f'pay_ton|{key}')])
+    if plan['stars_price']:
+        keyboard.append([InlineKeyboardButton(f"⭐ Pay {plan['stars_price']} Stars", callback_data=f'pay_stars|{key}')])
+    if plan['ton_price']:
+        keyboard.append([InlineKeyboardButton(f"💎 Pay {plan['ton_price']} TON", callback_data=f'pay_ton|{key}')])
     keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='feature_store')])
     await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
 async def _callback_pay_stars(update, query, context, user_id, data):
     key = data.split('|', 1)[1]
-    feat = bot_data.get_feature(key)
-    if not feat or not feat['enabled'] or not feat['stars_price']:
-        await query.answer("Feature not available.")
+    plan = bot_data.get_plan(key)
+    if not plan or not plan['enabled'] or not plan['stars_price']:
+        await query.answer("Plan not available.")
         return
     try:
         await context.bot.send_invoice(
             chat_id=int(user_id),
-            title=feat['title'][:64],
-            description=(feat['description'] or '')[:255],
+            title=f"Subscription - {plan['title']}"[:64],
+            description=(plan['description'] or '')[:255],
             payload=f"stars:{key}",
             provider_token='',
             currency='XTR',
-            prices=[LabeledPrice(label='⭐', amount=int(feat['stars_price']))],
+            prices=[LabeledPrice(label='⭐', amount=int(plan['stars_price']))],
         )
         await query.answer("Invoice sent!")
     except Exception as e:
@@ -1188,9 +1393,9 @@ async def _callback_pay_stars(update, query, context, user_id, data):
 
 async def _callback_pay_ton(update, query, context, user_id, data):
     key = data.split('|', 1)[1]
-    feat = bot_data.get_feature(key)
-    if not feat or not feat['enabled'] or not feat['ton_price']:
-        await query.answer("Feature not available.")
+    plan = bot_data.get_plan(key)
+    if not plan or not plan['enabled'] or not plan['ton_price']:
+        await query.answer("Plan not available.")
         return
 
     token = os.getenv('CRYPTO_BOT_TOKEN')
@@ -1206,8 +1411,8 @@ async def _callback_pay_ton(update, query, context, user_id, data):
         async with aiohttp.ClientSession() as session:
             body = {
                 'asset': 'TON',
-                'amount': str(feat['ton_price']),
-                'description': feat['title'][:255],
+                'amount': str(plan['ton_price']),
+                'description': f"Subscription - {plan['title']}"[:255],
                 'payload': payload_str,
             }
             if callback_url:
@@ -1224,12 +1429,12 @@ async def _callback_pay_ton(update, query, context, user_id, data):
                     pay_url = result['pay_url']
                     bot_data.save_pending_crypto(invoice_id, user_id, key)
                     keyboard = [
-                        [InlineKeyboardButton(f"💎 Pay {feat['ton_price']} TON", url=pay_url)],
+                        [InlineKeyboardButton(f"💎 Pay {plan['ton_price']} TON", url=pay_url)],
                         [InlineKeyboardButton("✅ I've paid — Check", callback_data=f'crypto_check|{invoice_id}|{key}')],
                         [InlineKeyboardButton("🔙 Back", callback_data='feature_store')]
                     ]
                     await query.edit_message_text(
-                        f"💎 Pay with TON\n\nFeature: {feat['title']}\nAmount: {feat['ton_price']} TON\n\n"
+                        f"💎 Pay with TON\n\nPlan: {plan['title']}\nAmount: {plan['ton_price']} TON\n\n"
                         f"1️⃣ Tap the pay button (opens @CryptoBot)\n2️⃣ Complete the payment\n3️⃣ Tap 'I've paid — Check'",
                         reply_markup=InlineKeyboardMarkup(keyboard)
                     )
@@ -1256,12 +1461,12 @@ async def _callback_crypto_check(update, query, context, user_id, data):
         txn_id = result.get('hash') or str(invoice_id)
         if _finalize_payment(int(user_id), key, 'crypto_bot', txn_id, invoice_id):
             await query.edit_message_text(
-                "✅ Payment confirmed! Feature unlocked.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+                "✅ Payment confirmed! Subscription activated.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Back to Store", callback_data='feature_store')]])
             )
         else:
             await query.edit_message_text(
-                "❌ Invalid feature or already unlocked.",
+                "❌ Invalid plan or subscription error.",
                 reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='feature_store')]])
             )
     else:
@@ -1273,22 +1478,29 @@ async def _callback_crypto_check(update, query, context, user_id, data):
 async def _callback_paid_features(update, query, context, user_id, data):
     if not is_owner(int(user_id)):
         return
-    features = bot_data.get_features()
-    if not features:
-        text = "💰 Paid Features\n\nNo features yet. Add one with ➕ Add/Edit Feature."
+    plans = bot_data.get_plans()
+    if not plans:
+        text = "🛒 Shop Settings\n\nNo plans yet. Add one with ➕ Add/Edit Plan."
     else:
-        text = "💰 Paid Features\n\n"
-        for key, feat in features.items():
-            status = "🟢" if feat['enabled'] else "🔴"
-            stars = f"{feat['stars_price']}⭐" if feat['stars_price'] else "-"
-            ton = f"{feat['ton_price']} TON" if feat['ton_price'] else "-"
-            text += f"{status} {key}: {feat['title']} — {stars} / {ton}\n"
+        text = "🛒 Shop Settings\n\n"
+        for key, plan in plans.items():
+            status = "🟢" if plan['enabled'] else "🔴"
+            stars = f"{plan['stars_price']}⭐" if plan['stars_price'] else "-"
+            ton = f"{plan['ton_price']} TON" if plan['ton_price'] else "-"
+            text += f"{status} {key}: {plan['title']} — {_format_duration(plan['duration_days'])} — {stars} / {ton}\n"
+
+    max_size = bot_data.get_max_download_size()
+    if max_size:
+        text += f"\n📥 Max download size: {max_size / (1024*1024):.0f} MB\n"
+    else:
+        text += "\n📥 Max download size: not set\n"
 
     keyboard = [
-        [InlineKeyboardButton("➕ Add/Edit Feature", callback_data='add_feature')],
-        [InlineKeyboardButton("📋 Purchases", callback_data='feature_purchases')],
+        [InlineKeyboardButton("➕ Add/Edit Plan", callback_data='add_feature')],
+        [InlineKeyboardButton("📋 Subscriptions", callback_data='feature_purchases')],
+        [InlineKeyboardButton("📥 Set Download Limit (MB)", callback_data='set_download_limit')],
     ]
-    for key in features:
+    for key in plans:
         keyboard.append([
             InlineKeyboardButton(f"🔄 Toggle {key}", callback_data=f'toggle_feature|{key}'),
             InlineKeyboardButton(f"🗑 {key}", callback_data=f'delete_feature|{key}')
@@ -1302,7 +1514,7 @@ async def _callback_add_feature(update, query, context, user_id, data):
     context.user_data['feature_pending'] = {}
     context.user_data['awaiting'] = 'feature_key'
     await query.edit_message_text(
-        '➕ Add/Edit Feature\n\nSend the feature key (short snake_case, e.g. "premium_alerts").\nUsing an existing key edits that feature.',
+        '➕ Add/Edit Plan\n\nSend the plan key (short snake_case, e.g. "monthly").\nUsing an existing key edits that plan.',
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='paid_features')]])
     )
 
@@ -1310,14 +1522,15 @@ async def _callback_toggle_feature(update, query, context, user_id, data):
     if not is_owner(int(user_id)):
         return
     key = data.split('|', 1)[1]
-    feat = bot_data.get_feature(key)
-    if not feat:
-        await query.answer("Feature not found.")
+    plan = bot_data.get_plan(key)
+    if not plan:
+        await query.answer("Plan not found.")
         return
-    bot_data.upsert_feature(key, feat['title'], feat['description'], feat['stars_price'], feat['ton_price'], enabled=not feat['enabled'])
-    status = "enabled" if bot_data.get_feature(key)['enabled'] else "disabled"
+    bot_data.upsert_plan(key, plan['title'], plan['description'], plan['duration_days'],
+                         plan['stars_price'], plan['ton_price'], enabled=not plan['enabled'])
+    status = "enabled" if bot_data.get_plan(key)['enabled'] else "disabled"
     await query.edit_message_text(
-        f"✅ Feature '{key}' is now {status}.",
+        f"✅ Plan '{key}' is now {status}.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
     )
 
@@ -1325,28 +1538,169 @@ async def _callback_delete_feature(update, query, context, user_id, data):
     if not is_owner(int(user_id)):
         return
     key = data.split('|', 1)[1]
-    bot_data.remove_feature(key)
+    bot_data.remove_plan(key)
     await query.edit_message_text(
-        f"✅ Feature '{key}' deleted.",
+        f"✅ Plan '{key}' deleted.",
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
     )
 
 async def _callback_feature_purchases(update, query, context, user_id, data):
     if not is_owner(int(user_id)):
         return
-    purchases = bot_data.get_all_purchases()
-    if not purchases:
+    subs = bot_data.get_all_subscriptions()
+    if not subs:
         await query.edit_message_text(
-            "📋 Purchases\n\nNo purchases yet.",
+            "📋 Subscriptions\n\nNo subscriptions yet.",
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
         )
         return
-    text = "📋 Purchases\n\n"
-    for p in purchases:
-        text += f"{p['user_id']} — {p['feature_key']} ({p['method']})\n"
+    text = "📋 Subscriptions\n\n"
+    now = datetime.now().isoformat()
+    for s in subs:
+        active = "✅" if s['expires_at'] > now else "❌"
+        text += f"{active} {s['user_id']} — {s['plan_key']} — expires {s['expires_at'][:10]} ({s['method']})\n"
     await query.edit_message_text(
         text[:4000],
         reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='paid_features')]])
+    )
+
+async def _callback_set_download_limit(update, query, context, user_id, data):
+    if not is_owner(int(user_id)):
+        return
+    context.user_data['awaiting'] = 'download_limit'
+    await query.edit_message_text(
+        '📥 Set Download Limit\n\nSend the maximum file size in MB that the bot will provide download links for.\n'
+        'Only subscribed users can request download links; files above this limit are not served.\n\n'
+        'Example: send "1900" for 1.9 GB, or "0" to disable the limit.',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='paid_features')]])
+    )
+
+# ---------------------------------------------------------------- subscriber channel notifications
+
+async def _callback_channel_settings(update, query, context, user_id, data):
+    if not is_subscribed(int(user_id)):
+        await query.edit_message_text(
+            "🔒 Channel notifications require an active subscription.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Subscribe", callback_data='feature_store')]])
+        )
+        return
+
+    cs = bot_data.get_channel_settings(user_id)
+    repos = bot_data.get_repos(user_id)
+    dl_mode = bot_data.get_download_mode(user_id)
+    dl_label = "📁 Bot file" if dl_mode == 'bot_file' else "🔗 Direct link"
+
+    text = "📢 Channel Notifications\n\n"
+    if cs and cs.get('channel'):
+        mode_label = "📁 Bot file" if cs.get('mode') == 'bot_file' else "🔗 Direct link"
+        text += f"📡 Channel: {cs['channel']}\n"
+        text += f"📥 Channel download mode: {mode_label}\n"
+        sel = bot_data.get_channel_repos(user_id)
+        if sel:
+            text += "📦 Selected repos: " + ", ".join(sel) + "\n"
+        else:
+            text += "📦 No repos selected (nothing will be posted yet)\n"
+    else:
+        text += "📡 Channel: not set\n\nSet a channel and select repos to receive release notifications and download links there."
+    text += f"\n📥 Private chat download mode: {dl_label}\n\nBot file: files are uploaded to Telegram.\nDirect link: download URLs are posted instead."
+
+    keyboard = [
+        [InlineKeyboardButton("📡 Set Channel", callback_data='channel_set')],
+    ]
+    if repos:
+        keyboard.append([InlineKeyboardButton("📦 Select Repos", callback_data='channel_repos')])
+    if cs and cs.get('channel'):
+        mode_label = "📁 Bot file" if cs.get('mode') == 'bot_file' else "🔗 Direct link"
+        keyboard.append([InlineKeyboardButton(f"📥 Channel Mode: {mode_label}", callback_data='channel_mode')])
+        keyboard.append([InlineKeyboardButton("🗑 Remove Channel", callback_data='channel_remove')])
+    keyboard.append([InlineKeyboardButton(f"📥 Private Download Mode: {dl_label}", callback_data='download_mode')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='main_menu')])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def _callback_channel_set(update, query, context, user_id, data):
+    if not is_subscribed(int(user_id)):
+        await query.answer("Subscription required.")
+        return
+    context.user_data['awaiting'] = 'channel_channel'
+    await query.edit_message_text(
+        '📡 Set Channel\n\nSend the channel username (e.g. @mychannel) or numeric chat ID where you want release '
+        'notifications and download links posted.\n\nThe bot must be an admin of that channel.',
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("❌ Cancel", callback_data='channel_settings')]])
+    )
+
+async def _callback_channel_repos(update, query, context, user_id, data):
+    if not is_subscribed(int(user_id)):
+        await query.answer("Subscription required.")
+        return
+    cs = bot_data.get_channel_settings(user_id)
+    if not cs or not cs.get('channel'):
+        await query.edit_message_text(
+            "📡 Set a channel first before selecting repos.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='channel_settings')]])
+        )
+        return
+    user_repos = bot_data.get_repos(user_id)
+    text = "📦 Select Repos\n\nNotifications for the selected repos will also be posted to your channel:\n\n"
+    keyboard = []
+    for repo in user_repos:
+        repo_type = bot_data.get_repo_type(user_id, repo)
+        icon = "🤖" if repo_type == 'github' else "🦊"
+        mark = "✅" if bot_data.has_channel_repo(user_id, repo) else "⬜"
+        text += f"{mark} {icon} {repo}\n"
+        keyboard.append([InlineKeyboardButton(f"{mark} {icon} {repo}", callback_data=f'channel_repo|{repo}')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='channel_settings')])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def _callback_channel_repo_toggle(update, query, context, user_id, data):
+    repo = data.split('|', 1)[1]
+    if not is_subscribed(int(user_id)):
+        await query.answer("Subscription required.")
+        return
+    bot_data.toggle_channel_repo(user_id, repo)
+    user_repos = bot_data.get_repos(user_id)
+    text = "📦 Select Repos\n\nNotifications for the selected repos will also be posted to your channel:\n\n"
+    keyboard = []
+    for r in user_repos:
+        repo_type = bot_data.get_repo_type(user_id, r)
+        icon = "🤖" if repo_type == 'github' else "🦊"
+        mark = "✅" if bot_data.has_channel_repo(user_id, r) else "⬜"
+        text += f"{mark} {icon} {r}\n"
+        keyboard.append([InlineKeyboardButton(f"{mark} {icon} {r}", callback_data=f'channel_repo|{r}')])
+    keyboard.append([InlineKeyboardButton("🔙 Back", callback_data='channel_settings')])
+    await query.edit_message_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+async def _callback_channel_mode(update, query, context, user_id, data):
+    if not is_subscribed(int(user_id)):
+        await query.answer("Subscription required.")
+        return
+    cs = bot_data.get_channel_settings(user_id)
+    new_mode = 'direct_link' if (cs and cs.get('mode') == 'bot_file') else 'bot_file'
+    bot_data.set_channel_mode(user_id, new_mode)
+    bot_data.set_download_mode(user_id, new_mode)
+    label = "📁 Bot file" if new_mode == 'bot_file' else "🔗 Direct link"
+    await query.edit_message_text(
+        f"✅ Download mode set to: {label}\n\nBot file: small files are uploaded to Telegram.\nDirect link: download URLs are posted instead.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='channel_settings')]])
+    )
+
+async def _callback_channel_remove(update, query, context, user_id, data):
+    if not is_subscribed(int(user_id)):
+        await query.answer("Subscription required.")
+        return
+    bot_data.remove_channel(user_id)
+    await query.edit_message_text(
+        "✅ Channel removed. Notifications will only go to your private chat.",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='channel_settings')]])
+    )
+
+async def _callback_download_mode(update, query, context, user_id, data):
+    mode = bot_data.get_download_mode(user_id)
+    new_mode = 'direct_link' if mode == 'bot_file' else 'bot_file'
+    bot_data.set_download_mode(user_id, new_mode)
+    label = "📁 Bot file" if new_mode == 'bot_file' else "🔗 Direct link"
+    await query.edit_message_text(
+        f"✅ Private-chat download mode set to: {label}",
+        reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back", callback_data='channel_settings')]])
     )
 
 EXACT_CALLBACK_HANDLERS = {
@@ -1382,6 +1736,13 @@ EXACT_CALLBACK_HANDLERS = {
     'paid_features': _callback_paid_features,
     'add_feature': _callback_add_feature,
     'feature_purchases': _callback_feature_purchases,
+    'set_download_limit': _callback_set_download_limit,
+    'channel_settings': _callback_channel_settings,
+    'channel_set': _callback_channel_set,
+    'channel_repos': _callback_channel_repos,
+    'channel_mode': _callback_channel_mode,
+    'channel_remove': _callback_channel_remove,
+    'download_mode': _callback_download_mode,
 }
 
 PREFIX_CALLBACK_HANDLERS = [
@@ -1396,6 +1757,7 @@ PREFIX_CALLBACK_HANDLERS = [
     ('crypto_check|', _callback_crypto_check),
     ('toggle_feature|', _callback_toggle_feature),
     ('delete_feature|', _callback_delete_feature),
+    ('channel_repo|', _callback_channel_repo_toggle),
 ]
 
 async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1686,12 +2048,12 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         key = update.message.text.strip().replace(' ', '_')
         if not key:
-            await update.message.reply_text('❌ Invalid feature key.')
+            await update.message.reply_text('❌ Invalid plan key.')
             return
         pending = context.user_data.setdefault('feature_pending', {})
         pending['key'] = key
         context.user_data['awaiting'] = 'feature_title'
-        await update.message.reply_text(f"✅ Feature key: {key}\n\nNow send the feature title (shown to users):")
+        await update.message.reply_text(f"✅ Plan key: {key}\n\nNow send the plan title (shown to users):")
 
     elif awaiting == 'feature_title':
         if not is_owner(int(user_id)):
@@ -1715,8 +2077,28 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         desc = update.message.text.strip()
         pending['description'] = '' if desc == '-' else desc
+        context.user_data['awaiting'] = 'feature_duration'
+        await update.message.reply_text("✅ Description saved.\n\nNow send the subscription duration in days (e.g. 30, 90, 180, 365):")
+
+    elif awaiting == 'feature_duration':
+        if not is_owner(int(user_id)):
+            return
+        pending = context.user_data.get('feature_pending') or {}
+        if 'key' not in pending:
+            await update.message.reply_text('❌ Please start over from the admin panel.')
+            context.user_data.pop('awaiting', None)
+            return
+        try:
+            duration = int(update.message.text.strip())
+        except ValueError:
+            await update.message.reply_text('❌ Invalid number. Send the duration in days (e.g. 30, 90, 180, 365).')
+            return
+        if duration <= 0:
+            await update.message.reply_text('❌ Duration must be a positive number of days.')
+            return
+        pending['duration'] = duration
         context.user_data['awaiting'] = 'feature_stars'
-        await update.message.reply_text("✅ Description saved.\n\nNow send the price in Telegram Stars (integer, e.g. 100). Send 0 to disable Stars payment:")
+        await update.message.reply_text(f"✅ Duration saved ({duration} days).\n\nNow send the price in Telegram Stars (integer, e.g. 100). Send 0 to disable Stars payment:")
 
     elif awaiting == 'feature_stars':
         if not is_owner(int(user_id)):
@@ -1749,14 +2131,47 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             await update.message.reply_text('❌ Invalid number. Send e.g. 0.5.')
             return
         key = pending['key']
-        bot_data.upsert_feature(key, pending.get('title', key), pending.get('description', ''), pending.get('stars', 0), ton)
+        bot_data.upsert_plan(key, pending.get('title', key), pending.get('description', ''), pending.get('duration', 30),
+                             pending.get('stars', 0), ton)
         context.user_data.pop('feature_pending', None)
         await update.message.reply_text(
-            f"✅ Feature saved:\nKey: {key}\nTitle: {pending.get('title', key)}\nStars: {pending.get('stars', 0)}⭐\nTON: {ton}",
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Paid Features", callback_data='paid_features')]])
+            f"✅ Plan saved:\nKey: {key}\nTitle: {pending.get('title', key)}\nDuration: {pending.get('duration', 30)} days\n"
+            f"Stars: {pending.get('stars', 0)}⭐\nTON: {ton}",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Shop Settings", callback_data='paid_features')]])
         )
         context.user_data.pop('awaiting', None)
-        logger.info(f"Owner saved paid feature {key}")
+        logger.info(f"Owner saved plan {key}")
+
+    elif awaiting == 'download_limit':
+        if not is_owner(int(user_id)):
+            return
+        try:
+            mb = float(update.message.text.strip())
+        except ValueError:
+            await update.message.reply_text('❌ Invalid number. Send the limit in MB (e.g. 1900).')
+            return
+        bot_data.set_max_download_size(int(mb * 1024 * 1024))
+        await update.message.reply_text(
+            f"✅ Download limit set to {mb:.0f} MB.",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("🔙 Back to Shop Settings", callback_data='paid_features')]])
+        )
+        context.user_data.pop('awaiting', None)
+        logger.info(f"Owner set download limit to {mb:.0f} MB")
+
+    elif awaiting == 'channel_channel':
+        if not is_subscribed(int(user_id)):
+            return
+        channel = update.message.text.strip()
+        if not channel:
+            await update.message.reply_text('❌ Invalid channel. Send the channel username (e.g. @mychannel) or ID.')
+            return
+        bot_data.set_channel(int(user_id), channel)
+        await update.message.reply_text(
+            f"✅ Channel set to: {channel}\n\nNow select which repos should be posted there (📦 Select Repos).",
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("📦 Select Repos", callback_data='channel_repos')]])
+        )
+        context.user_data.pop('awaiting', None)
+        logger.info(f"User {user_id} set notification channel to {channel}")
 
     elif awaiting == 'import_data':
         if not is_owner(int(user_id)):
@@ -1801,16 +2216,16 @@ async def successful_payment_handler(update: Update, context: ContextTypes.DEFAU
     if payload.startswith('stars:'):
         key = payload[6:]
         if _finalize_payment(int(user_id), key, 'stars', txn_id):
-            feature = bot_data.get_feature(key)
-            title = feature['title'] if feature else key
+            plan = bot_data.get_plan(key)
+            title = plan['title'] if plan else key
             await update.message.reply_text(
-                f"✅ Payment received! Feature unlocked: {title}",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+                f"✅ Payment received! Subscription activated: {title}",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Back to Store", callback_data='feature_store')]])
             )
         else:
             await update.message.reply_text(
-                "❌ Invalid feature or already unlocked.",
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+                "❌ Invalid plan or subscription error.",
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Back to Store", callback_data='feature_store')]])
             )
     else:
         await update.message.reply_text("✅ Payment received!")
@@ -1855,19 +2270,19 @@ async def _handle_crypto_webhook(data):
         if len(parts) < 3:
             return
         user_id = int(parts[1])
-        feature_key = ':'.join(parts[2:])
+        plan_key = ':'.join(parts[2:])
         if payload.get('status') != 'paid':
             return
         invoice_id = payload.get('id') or payload.get('invoice_id')
         txn_id = payload.get('hash') or str(invoice_id)
-        if _finalize_payment(user_id, feature_key, 'crypto_bot', txn_id, invoice_id):
-            feature = bot_data.get_feature(feature_key)
-            title = feature['title'] if feature else feature_key
+        if _finalize_payment(user_id, plan_key, 'crypto_bot', txn_id, invoice_id):
+            plan = bot_data.get_plan(plan_key)
+            title = plan['title'] if plan else plan_key
             if _APPLICATION:
                 await _APPLICATION.bot.send_message(
                     chat_id=user_id,
-                    text=f"✅ Payment received! Feature unlocked: {title}",
-                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("✨ Back to Store", callback_data='feature_store')]])
+                    text=f"✅ Payment received! Subscription activated: {title}",
+                    reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Back to Store", callback_data='feature_store')]])
                 )
     except Exception as e:
         logger.error(f"CryptoBot webhook processing error: {e}")
@@ -1886,24 +2301,31 @@ async def start_webhook_server(application):
 
 # ---------------------------------------------------------------- download & checks
 
-async def download_asset(context, user_id: str, platform: str, repo: str, tag: str, idx: int):
-    asset_key = f'{user_id}_{repo}_{tag}'
-    pending = bot_data.pending_assets.get(asset_key)
-    if not pending:
-        await context.bot.send_message(chat_id=int(user_id), text="❌ Download session expired. Please check for updates again.")
-        return
-    assets = pending['assets']
-    if idx >= len(assets):
-        await context.bot.send_message(chat_id=int(user_id), text="❌ Invalid file selection.")
-        return
+def _asset_size(asset, platform):
+    size = asset.get('size') or 0
+    try:
+        return int(size)
+    except (TypeError, ValueError):
+        return 0
 
+def _asset_direct_url(asset, platform, repo=None, tag=None):
+    if platform == 'github':
+        url = asset.get('browser_download_url')
+        if url:
+            return url
+        if repo and tag:
+            return f"https://github.com/{repo}/releases/download/{tag}/{asset.get('name', '')}"
+        return None
+    return asset.get('direct_asset_url') or asset.get('url')
+
+def subscription_locked_message():
+    return "🔒 Download links require an active subscription.\n\nTap Subscribe to see available plans."
+
+async def _fetch_asset_bytes(context, user_id, platform, repo, asset):
     if platform == 'github':
         token = bot_data.get_github_token(user_id)
         if not token:
-            await context.bot.send_message(chat_id=int(user_id), text="❌ GitHub token not set.")
-            return
-
-        asset = assets[idx]
+            return None, "❌ GitHub token not set."
         asset_id = asset['id']
         filename = asset.get('name', 'download')
         try:
@@ -1914,45 +2336,79 @@ async def download_asset(context, user_id: str, platform: str, repo: str, tag: s
                 }
                 url = f'https://api.github.com/repos/{repo}/releases/assets/{asset_id}'
                 async with session.get(url, headers=headers, allow_redirects=True) as response:
-                    if response.status == 200:
-                        file_data = await response.read()
-
-                        content_disposition = response.headers.get('Content-Disposition', '')
-                        if 'filename=' in content_disposition:
-                            filename = content_disposition.split('filename=')[1].strip('"')
-
-                        if len(file_data) > 50 * 1024 * 1024:
-                            await context.bot.send_message(
-                                chat_id=int(user_id),
-                                text=f"❌ File is too large to send via Telegram (>50MB).\n\nDownload directly: {response.url}"
-                            )
-                        else:
-                            await context.bot.send_document(
-                                chat_id=int(user_id),
-                                document=BytesIO(file_data),
-                                filename=filename,
-                                caption=f"📦 {filename}"
-                            )
-                            logger.info(f"User {user_id} downloaded GitHub asset {asset_id} from {repo}")
-                    else:
-                        await context.bot.send_message(
-                            chat_id=int(user_id),
-                            text=f"❌ Failed to download file. Status: {response.status}"
-                        )
+                    if response.status != 200:
+                        return None, f"❌ Failed to download file. Status: {response.status}"
+                    file_data = await response.read()
+                    content_disposition = response.headers.get('Content-Disposition', '')
+                    if 'filename=' in content_disposition:
+                        filename = content_disposition.split('filename=')[1].strip('"')
+                    return file_data, filename
         except Exception as e:
             logger.error(f"GitHub download error for user {user_id}: {e}")
-            await context.bot.send_message(
-                chat_id=int(user_id),
-                text=f"❌ Download failed: {str(e)}"
-            )
+            return None, f"❌ Download failed: {str(e)}"
+    return None, "❌ Unsupported platform for bot-file download."
 
-    elif platform == 'gitlab':
-        asset = assets[idx]
-        direct_url = asset.get('direct_asset_url') or asset.get('url')
+async def download_asset(context, user_id: str, platform: str, repo: str, tag: str, idx: int):
+    if not is_subscribed(int(user_id)):
         await context.bot.send_message(
             chat_id=int(user_id),
-            text=f"📥 Download link:\n{direct_url}"
+            text=subscription_locked_message(),
+            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Subscribe", callback_data='feature_store')]])
         )
+        return
+
+    asset_key = f'{user_id}_{repo}_{tag}'
+    pending = bot_data.pending_assets.get(asset_key)
+    if not pending:
+        await context.bot.send_message(chat_id=int(user_id), text="❌ Download session expired. Please check for updates again.")
+        return
+    assets = pending['assets']
+    if idx >= len(assets):
+        await context.bot.send_message(chat_id=int(user_id), text="❌ Invalid file selection.")
+        return
+
+    asset = assets[idx]
+    size = _asset_size(asset, platform)
+    max_size = bot_data.get_max_download_size()
+    if max_size and size > max_size:
+        await context.bot.send_message(
+            chat_id=int(user_id),
+            text=f"❌ This file ({size / (1024*1024):.0f} MB) exceeds the maximum download size limit ({max_size / (1024*1024):.0f} MB)."
+        )
+        return
+
+    mode = bot_data.get_download_mode(user_id)
+    direct_url = _asset_direct_url(asset, platform, repo, tag)
+
+    if mode == 'bot_file' and size <= 50 * 1024 * 1024:
+        file_data, result = await _fetch_asset_bytes(context, user_id, platform, repo, asset)
+        if file_data is None:
+            if direct_url:
+                await context.bot.send_message(chat_id=int(user_id), text=f"📥 Download link:\n{direct_url}")
+            else:
+                await context.bot.send_message(chat_id=int(user_id), text=result)
+            return
+        filename = result
+        try:
+            await context.bot.send_document(
+                chat_id=int(user_id),
+                document=BytesIO(file_data),
+                filename=filename,
+                caption=f"📦 {filename}"
+            )
+            logger.info(f"User {user_id} downloaded {platform} asset from {repo}")
+        except Exception as e:
+            logger.error(f"send_document error for user {user_id}: {e}")
+            if direct_url:
+                await context.bot.send_message(chat_id=int(user_id), text=f"📥 Download link:\n{direct_url}")
+            else:
+                await context.bot.send_message(chat_id=int(user_id), text=f"❌ Failed to send file: {str(e)}")
+        return
+
+    if direct_url:
+        await context.bot.send_message(chat_id=int(user_id), text=f"📥 Download link:\n{direct_url}")
+    else:
+        await context.bot.send_message(chat_id=int(user_id), text="❌ No download link available for this file.")
 
 async def _fetch_github_releases(session, token, repo, per_page=30, max_pages=10):
     url = f'https://api.github.com/repos/{repo}/releases'
@@ -2024,19 +2480,84 @@ async def _send_release_notification(context, user_id: str, repo: str, repo_type
     message += f"🔗 {url}\n"
 
     if assets:
-        message += f"\n📥 {len(assets)} file(s) available"
-        bot_data.pending_assets[f'{user_id}_{repo}_{tag}'] = {
-            'assets': assets,
-            'platform': repo_type,
-            'repo': repo,
-            'tag': tag
-        }
-        keyboard = create_asset_buttons(user_id, repo_type, repo, assets, 0, tag)
-        await context.bot.send_message(chat_id=int(user_id), text=message, reply_markup=InlineKeyboardMarkup(keyboard))
+        if is_subscribed(int(user_id)):
+            message += f"\n📥 {len(assets)} file(s) available"
+            bot_data.pending_assets[f'{user_id}_{repo}_{tag}'] = {
+                'assets': assets,
+                'platform': repo_type,
+                'repo': repo,
+                'tag': tag
+            }
+            keyboard = create_asset_buttons(user_id, repo_type, repo, assets, 0, tag)
+            await context.bot.send_message(chat_id=int(user_id), text=message, reply_markup=InlineKeyboardMarkup(keyboard))
+        else:
+            message += f"\n\n🔒 Download links require an active subscription."
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=message,
+                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⭐ Subscribe", callback_data='feature_store')]])
+            )
     else:
         await context.bot.send_message(chat_id=int(user_id), text=message)
 
+    cs = bot_data.get_channel_settings(user_id)
+    if cs and cs.get('channel') and bot_data.has_channel_repo(user_id, repo):
+        await _send_channel_release(context, user_id, repo, repo_type, release, base_url, cs, assets)
+
     logger.info(f"Sent {repo_type} release notification to {user_id} for {repo} ({tag})")
+
+async def _send_channel_release(context, user_id, repo, repo_type, release, base_url, cs, assets):
+    channel = cs['channel']
+    mode = cs.get('mode') or 'bot_file'
+    tag = release.get('tag_name')
+    name = release.get('name') or tag
+
+    base = base_url or GITLAB_COM
+    if repo_type == 'github':
+        url = release.get('html_url')
+    else:
+        url = release.get('_links', {}).get('self') or f"{base}/{repo}/-/releases/{tag}"
+
+    message = f"🎉 New {('GitHub' if repo_type == 'github' else 'GitLab')} Release for {repo}!\n\n"
+    message += f"📦 {name}\n"
+    message += f"🏷 Tag: {tag}\n"
+    message += f"🔗 {url}\n"
+
+    try:
+        files = []
+        links = []
+        for asset in (assets or []):
+            size = _asset_size(asset, repo_type)
+            if mode == 'bot_file' and size <= 50 * 1024 * 1024:
+                files.append(asset)
+            else:
+                direct = _asset_direct_url(asset, repo_type, repo, tag)
+                if direct:
+                    links.append(f"📥 {asset.get('name', 'file')}\n{direct}")
+
+        if files or links:
+            message += f"\n📥 {len(files) + len(links)} file(s) available\n"
+        if links:
+            message += "\n" + "\n".join(links)
+
+        await context.bot.send_message(chat_id=channel, text=message)
+
+        for asset in files:
+            file_data, result = await _fetch_asset_bytes(context, user_id, repo_type, repo, asset)
+            if file_data is None:
+                continue
+            try:
+                await context.bot.send_document(
+                    chat_id=channel,
+                    document=BytesIO(file_data),
+                    filename=result,
+                    caption=f"📦 {result}"
+                )
+            except Exception as e:
+                logger.error(f"Channel send_document error: {e}")
+        logger.info(f"Posted release notification for {repo} ({tag}) to channel {channel}")
+    except Exception as e:
+        logger.error(f"Channel notification error for user {user_id}: {e}")
 
 async def _process_releases(context, user_id: str, repo: str, repo_type: str, releases: list, force: bool, base_url: str = None):
     if not releases:

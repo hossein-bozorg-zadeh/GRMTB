@@ -10,11 +10,13 @@ from telegram.error import TelegramError
 import aiohttp
 from io import BytesIO
 
+from logging.handlers import RotatingFileHandler
+
 logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     level=logging.INFO,
     handlers=[
-        logging.FileHandler('bot.log'),
+        RotatingFileHandler('bot.log', maxBytes=10 * 1024 * 1024, backupCount=5),
         logging.StreamHandler()
     ]
 )
@@ -83,11 +85,12 @@ class BotData:
             logger.error(f"Error saving data: {e}")
     
     def export_data(self):
+        # API tokens are deliberately excluded: exports are downloaded and
+        # posted to the log channel, where they would leak every user's
+        # credentials. Users simply re-enter their tokens after a restore.
         return json.dumps({
             'users': self.users,
             'repos': self.repos,
-            'user_tokens': self.user_tokens,
-            'user_gitlab_tokens': self.user_gitlab_tokens,
             'check_intervals': self.check_intervals,
             'last_releases': self.last_releases,
             'bot_public': self.bot_public,
@@ -421,7 +424,7 @@ async def button_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return
         
         repo = '_'.join(user_repo.split('_')[1:])
-        asset_data = context.user_data.get(f'assets_{user_id}_{repo}')
+        asset_data = context.bot_data.get(f'assets_{user_id}_{repo}')
         
         if not asset_data:
             await query.answer("Session expired. Please check for updates again.")
@@ -879,8 +882,20 @@ async def download_asset(context: ContextTypes.DEFAULT_TYPE, user_id: str, platf
                 url = f'https://api.github.com/repos/{repo}/releases/assets/{asset_id}'
                 async with session.get(url, headers=headers, allow_redirects=True) as response:
                     if response.status == 200:
+                        # Refuse oversized files before downloading them, so a
+                        # 2 GB asset is not pulled into memory just to be
+                        # rejected. Assets without a Content-Length fall back
+                        # to the post-download size check below.
+                        declared = response.headers.get('Content-Length')
+                        if declared and declared.isdigit() and int(declared) > 50 * 1024 * 1024:
+                            await context.bot.send_message(
+                                chat_id=int(user_id),
+                                text=f"❌ File is too large to send via Telegram (>50MB).\n\nDownload directly: {response.url}"
+                            )
+                            return
+
                         file_data = await response.read()
-                        
+
                         content_disposition = response.headers.get('Content-Disposition', '')
                         filename = 'download'
                         if 'filename=' in content_disposition:
@@ -912,39 +927,31 @@ async def download_asset(context: ContextTypes.DEFAULT_TYPE, user_id: str, platf
             )
     
     elif platform == 'gitlab':
-        if user_id not in bot_data.user_gitlab_tokens:
-            await context.bot.send_message(chat_id=int(user_id), text="❌ GitLab token not set.")
-            return
-        token = bot_data.user_gitlab_tokens[user_id]
-        
-        try:
-            async with aiohttp.ClientSession() as session:
-                headers = {
-                    'PRIVATE-TOKEN': token
-                }
-                
-                url = f'https://gitlab.com/api/v4/projects/{repo.replace("/", "%2F")}/releases/{asset_id}'
-                async with session.get(url, headers=headers) as response:
-                    if response.status == 200:
-                        data = await response.json()
-                        if 'assets' in data and 'links' in data['assets']:
-                            links = data['assets']['links']
-                            if links:
-                                direct_url = links[0].get('direct_asset_url') or links[0].get('url')
-                                await context.bot.send_message(
-                                    chat_id=int(user_id),
-                                    text=f"📥 Download link:\n{direct_url}"
-                                )
-                    else:
-                        await context.bot.send_message(
-                            chat_id=int(user_id),
-                            text=f"❌ Failed to get download link. Status: {response.status}"
-                        )
-        except Exception as e:
-            logger.error(f"GitLab download error for user {user_id}: {e}")
+        # GitLab buttons carry an index into the asset list captured when the
+        # release notification was sent, so the direct URL is already here and
+        # no API round-trip is needed.
+        store = context.bot_data.get(f'assets_{user_id}_{repo}')
+        if not store or store.get('platform') != 'gitlab':
             await context.bot.send_message(
                 chat_id=int(user_id),
-                text=f"❌ Download failed: {str(e)}"
+                text="⚠️ Session expired. Use 🔄 Check Now to refresh the release list."
+            )
+            return
+
+        try:
+            link = store['assets'][int(asset_id)]
+        except (ValueError, IndexError, KeyError):
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text="⚠️ Could not find that file. Use 🔄 Check Now to refresh."
+            )
+            return
+
+        direct_url = link.get('direct_asset_url') or link.get('url')
+        if direct_url:
+            await context.bot.send_message(
+                chat_id=int(user_id),
+                text=f"📥 Download link:\n{direct_url}"
             )
 
 async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, repo: str, force: bool = False):
@@ -995,7 +1002,7 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                                 if assets:
                                     message += f"\n📥 {len(assets)} file(s) available"
                                     
-                                    context.user_data[f'assets_{user_id}_{repo}'] = {
+                                    context.bot_data[f'assets_{user_id}_{repo}'] = {
                                         'assets': assets,
                                         'platform': 'github',
                                         'repo': repo,
@@ -1067,7 +1074,7 @@ async def check_repo_updates(context: ContextTypes.DEFAULT_TYPE, user_id: str, r
                                     if assets:
                                         message += f"\n📥 {len(assets)} file(s) available"
                                         
-                                        context.user_data[f'assets_{user_id}_{repo}'] = {
+                                        context.bot_data[f'assets_{user_id}_{repo}'] = {
                                             'assets': assets,
                                             'platform': 'gitlab',
                                             'repo': repo,
@@ -1102,14 +1109,14 @@ def create_asset_buttons(user_id, platform, repo, assets, page, tag=None):
     end_idx = start_idx + items_per_page
     page_assets = assets[start_idx:end_idx]
     
-    for asset in page_assets:
+    for i, asset in enumerate(page_assets):
         if platform == 'github':
             asset_name = asset['name']
             asset_size = asset['size'] / 1024 / 1024
             button_text = f"📥 {asset_name} ({asset_size:.1f}MB)"
             if len(button_text) > 60:
                 button_text = button_text[:57] + "..."
-            
+
             keyboard.append([InlineKeyboardButton(
                 button_text,
                 callback_data=f"download_asset_{user_id}_github_{repo}_{asset['id']}"
@@ -1119,10 +1126,13 @@ def create_asset_buttons(user_id, platform, repo, assets, page, tag=None):
             button_text = f"📥 {asset_name}"
             if len(button_text) > 60:
                 button_text = button_text[:57] + "..."
-            
+
+            # The absolute index into the stored asset list, not the release
+            # tag: tags can be arbitrarily long and would break Telegram's
+            # 64-byte callback_data limit.
             keyboard.append([InlineKeyboardButton(
                 button_text,
-                callback_data=f"download_asset_{user_id}_gitlab_{repo}_{tag}"
+                callback_data=f"download_asset_{user_id}_gitlab_{repo}_{start_idx + i}"
             )])
     
     nav_buttons = []
@@ -1144,7 +1154,9 @@ def create_asset_buttons(user_id, platform, repo, assets, page, tag=None):
 async def check_all_repos(context: ContextTypes.DEFAULT_TYPE):
     while True:
         try:
-            for user_id, repos in bot_data.repos.items():
+            # Copy the mapping: users add/remove repos while this loop runs,
+            # and iterating a dict while it changes raises RuntimeError.
+            for user_id, repos in list(bot_data.repos.items()):
                 for repo in repos:
                     key = f"{user_id}_{repo}"
                     interval = bot_data.check_intervals.get(key, 24)
@@ -1203,10 +1215,11 @@ async def daily_log_upload(context: ContextTypes.DEFAULT_TYPE):
             await asyncio.sleep(3600)
 
 async def start_background_checks(application):
-    await asyncio.sleep(10)
-    asyncio.create_task(check_all_repos(application))
+    """post_init hook: runs inside the polling event loop, where create_task
+    is safe (unlike before run_polling starts)."""
+    application.create_task(check_all_repos(application))
     if bot_data.log_channel:
-        asyncio.create_task(daily_log_upload(application))
+        application.create_task(daily_log_upload(application))
 
 def main():
     global OWNER_ID
@@ -1226,15 +1239,18 @@ def main():
         print("Error: OWNER_ID must be a valid integer")
         return
     
-    application = Application.builder().token(BOT_TOKEN).build()
-    
+    application = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        .post_init(start_background_checks)
+        .build()
+    )
+
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CallbackQueryHandler(button_callback))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
     application.add_handler(MessageHandler(filters.Document.ALL, handle_message))
-    
-    asyncio.get_event_loop().create_task(start_background_checks(application))
-    
+
     logger.info("Bot started successfully!")
     print("Bot started successfully!")
     

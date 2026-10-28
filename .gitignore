@@ -1,0 +1,13 @@
+# runtime data — never commit (contains user API tokens)
+bot_data.json
+bot*.log
+*.log
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# env
+.env
